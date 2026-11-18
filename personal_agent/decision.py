@@ -17,7 +17,7 @@ def _ready_full(require_fresh=False):
     csnap=load_full_portfolio_snapshot()
     if csnap.status in {'not_configured','missing_accounts','date_mismatch','unavailable'} or (require_fresh and not csnap.advice_allowed):
         return {'status':csnap.status,'stale':csnap.stale}, {'status':'blocked','reason':csnap.status,'stale':csnap.stale,'limitations':['Current estimates are blocked until every account shares one fresh statement date.']}
-    full_pos=[{'account':p.account,'conid':p.conid,'symbol':p.symbol,'asset':p.asset,'currency':p.currency,'quantity':str(p.quantity),'value_base':str(p.market_value_base),'underlying_conid':p.conid,'fx_rate':str(p.fx_rate_to_base or '1')} for p in csnap.positions]
+    full_pos=[{'account':p.account,'conid':p.conid,'symbol':p.symbol,'asset':p.asset,'currency':p.currency,'quantity':str(p.quantity),'value_base':str(p.market_value_base),'underlying_conid':p.underlying_conid or p.conid,'cost_basis':str(p.cost_basis) if p.cost_basis is not None else None,'fx_rate':str(p.fx_rate_to_base or '1')} for p in csnap.positions]
     if not full_pos and csnap.as_of:
         with db('finance') as c:
             finance_schema(c)

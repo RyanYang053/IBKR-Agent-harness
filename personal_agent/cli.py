@@ -107,6 +107,8 @@ def main():
         elif a.command=='check-config':
             cfg=config(); result={'status':'readable','configured_accounts':len(cfg['finance']['accounts']),'knowledge_roots':len(cfg['knowledge_roots']),'memory':'explicit_cli'}
         print(json.dumps(result,ensure_ascii=False,indent=2))
+        if a.command in {'shadow-check','broker-live-sync','broker-reconcile','run-monitoring'} and isinstance(result, dict) and result.get('status') in {'blocked','unavailable','error','date_mismatch','unmatched_transfers','missing_fx_rate','blocked_policy_violation','blocked_stale_ledger'}:
+            return 2
     except Exception as e:
         print(f'{type(e).__name__}: {e}',file=sys.stderr); return 1
     return 0

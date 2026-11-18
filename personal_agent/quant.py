@@ -553,7 +553,7 @@ def simulate_allocation(portfolio_snapshot, cash_contribution=0.0, proposed_trad
     pol=investment_policy or load_policy()
     acct_constraints=pol.get('account_constraints') or {}
     contrib=dec(cash_contribution or 0)
-    accts=[AccountRecord(account=a.account,tax_bucket=a.tax_bucket,nav=a.nav,cash=a.cash,allow_margin=a.allow_margin,source=a.source) for a in csnap.accounts]
+    accts=[AccountRecord(account=a.account,tax_bucket=a.tax_bucket,nav=a.nav,cash=a.cash,allow_margin=a.allow_margin,buying_power=a.buying_power,source=a.source) for a in csnap.accounts]
     pos_list=list(csnap.positions)
     if contrib!=0 and accts:
         if contribution_account:
@@ -566,7 +566,9 @@ def simulate_allocation(portfolio_snapshot, cash_contribution=0.0, proposed_trad
         else:
             raise ValueError('explicit_account_required:specify contribution_account for multi-account cash contribution')
         a0=accts[idx]
-        accts[idx]=AccountRecord(account=a0.account, tax_bucket=a0.tax_bucket, nav=a0.nav+contrib, cash=(a0.cash if a0.cash is not None else Decimal(0))+contrib, allow_margin=a0.allow_margin, source=a0.source)
+        if contrib<0 and a0.tax_bucket in {'tfsa','rrsp','fhsa'} and ((a0.cash if a0.cash is not None else Decimal(0))+contrib)<Decimal('-0.000001'):
+            raise ValueError(f'insufficient_account_buying_power:withdrawal_exceeds_registered_cash:{a0.account}')
+        accts[idx]=AccountRecord(account=a0.account, tax_bucket=a0.tax_bucket, nav=a0.nav+contrib, cash=(a0.cash if a0.cash is not None else Decimal(0))+contrib, allow_margin=a0.allow_margin, buying_power=(a0.buying_power+contrib if a0.buying_power is not None else None), source=a0.source)
     for tr in (proposed_trades or []):
         sym=str(tr.get('symbol') or '').strip().upper()
         cid=str(tr.get('conid') or '').strip()
@@ -610,8 +612,12 @@ def simulate_allocation(portfolio_snapshot, cash_contribution=0.0, proposed_trad
                 raise ValueError(f'missing_account_buying_power:{acct_t}')
             if (a_cur.cash-delta_v-fee)<Decimal('-0.000001'):
                 raise ValueError(f'insufficient_account_buying_power:{acct_t} needs {delta_v+fee}, has {a_cur.cash}')
+        elif delta_v>0 and allow_m and a_cur.buying_power is not None:
+            if (a_cur.buying_power-delta_v-fee)<Decimal('-0.000001'):
+                raise ValueError(f'insufficient_account_buying_power:{acct_t} buying_power={a_cur.buying_power} < {delta_v+fee}')
         new_cash=((a_cur.cash if a_cur.cash is not None else Decimal(0))-delta_v-fee) if a_cur.cash is not None or delta_v<0 else None
-        accts[a_idx]=AccountRecord(account=a_cur.account, tax_bucket=a_cur.tax_bucket, nav=a_cur.nav-fee, cash=new_cash, allow_margin=allow_m, source=a_cur.source)
+        new_bp=(a_cur.buying_power-delta_v-fee) if a_cur.buying_power is not None else None
+        accts[a_idx]=AccountRecord(account=a_cur.account, tax_bucket=a_cur.tax_bucket, nav=a_cur.nav-fee, cash=new_cash, allow_margin=allow_m, buying_power=new_bp, source=a_cur.source)
         if cid:
             p_idx=next((i for i,p in enumerate(pos_list) if p.conid==cid and p.account==acct_t), None)
         else:
@@ -919,8 +925,10 @@ def backtest_strategies(symbol='QQQ', initial_capital='10000', cost_bps='5', fin
     rows=market.bars(sym, 10000)
     if len(rows)<40:
         return {'status':'insufficient_history','symbol':sym,'rows':len(rows),'limitations':['Run market-sync to cache >=40 daily closes before running strategy comparison.']}
+    if any(r.get('open') is None for r in rows):
+        return {'status':'missing_open_price','symbol':sym,'rows':len(rows),'limitations':['Next-bar open execution requires open prices on all bars.']}
     closes=[float(r['close']) for r in rows]
-    opens=[float(r.get('open') or r['close']) for r in rows]
+    opens=[float(r['open']) for r in rows]
     dates=[r['date'] for r in rows]
     n=len(closes)
     def _metrics(curve):
@@ -1112,7 +1120,8 @@ def simulate_cashflow_strategy(symbol='QQQ', initial_capital='10000', monthly_co
     cap0=float(initial_capital); m_contrib=float(monthly_contribution); fee_r=float(cost_bps)/10000.0; c_y=float(cash_yield); fin_r=float(financing_rate)
     rows=market.bars(sym, 10000)
     if len(rows)<40: return {'status':'insufficient_history','symbol':sym,'rows':len(rows)}
-    opens=[float(r.get('open') or r['close']) for r in rows]
+    if any(r.get('open') is None for r in rows): return {'status':'missing_open_price','symbol':sym,'rows':len(rows)}
+    opens=[float(r['open']) for r in rows]
     closes=[float(r['close']) for r in rows]
     dates=[r['date'] for r in rows]
     n=len(closes)

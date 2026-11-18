@@ -16,6 +16,7 @@ class AccountRecord:
     nav: Decimal
     cash: Decimal | None
     allow_margin: bool = True
+    buying_power: Decimal | None = None
     source: str = ''
 
 @dataclass(frozen=True)
@@ -28,11 +29,24 @@ class PositionRecord:
     quantity: Decimal
     multiplier: Decimal
     market_value_base: Decimal
+    underlying_conid: str | None = None
+    cost_basis: Decimal | None = None
     underlying_price: Decimal | None = None
     underlying_currency: str | None = None
     fx_rate_to_base: Decimal | None = None
     delta: Decimal | None = None
     source: str = ''
+
+def compute_snapshot_id(as_of, currency, accounts, positions):
+    """Canonical SHA-256 snapshot fingerprint covering all account margin/cash fields and position/Greek/FX fields."""
+    sid_payload={
+        'schema':'v0.3.3',
+        'as_of':as_of,
+        'currency':currency,
+        'accts':sorted((a.account,a.tax_bucket,str(a.nav.normalize()),str(a.cash.normalize()) if a.cash is not None else None,str(a.buying_power.normalize()) if a.buying_power is not None else None,a.allow_margin) for a in accounts),
+        'pos':sorted((p.account,p.conid,p.symbol,p.asset,str(p.quantity.normalize()),str(p.multiplier.normalize()),str(p.market_value_base.normalize()),str(p.underlying_price.normalize()) if p.underlying_price is not None else None,str(p.fx_rate_to_base.normalize()) if p.fx_rate_to_base is not None else None,str(p.delta.normalize()) if p.delta is not None else None) for p in positions)
+    }
+    return hashlib.sha256(json.dumps(sid_payload, sort_keys=True).encode('utf-8')).hexdigest()[:16]
 
 @dataclass(frozen=True)
 class PortfolioSnapshot:
@@ -192,13 +206,14 @@ def load_full_portfolio_snapshot():
                     asset=str(p.get('asset') or 'STK').upper()
                     if asset=='CASH': continue
                     fx_v=dec(p['fx_rate']) if p.get('fx_rate') not in (None,'') else (Decimal(1) if cur==base_cur else None)
+                    cb_v=dec(p['cost_basis']) if p.get('cost_basis') not in (None,'') else None
                     pos_recs.append(PositionRecord(
                         account=a, conid=str(p['conid']), symbol=str(p['symbol']).upper(), asset=asset,
                         currency=cur, quantity=dec(p['quantity']), multiplier=Decimal(100) if asset=='OPT' else Decimal(1),
-                        market_value_base=dec(p['value_base']), underlying_currency=cur, fx_rate_to_base=fx_v, source=str(latest[a]['source'] or '')
+                        market_value_base=dec(p['value_base']), underlying_conid=str(p.get('underlying_conid') or p['conid']),
+                        cost_basis=cb_v, underlying_currency=cur, fx_rate_to_base=fx_v, source=str(latest[a]['source'] or '')
                     ))
-    sid_payload={'schema':'v0.3.3','as_of':d,'currency':base_cur,'accts':[(a.account,a.tax_bucket,str(a.nav.normalize()),str(a.cash.normalize()) if a.cash is not None else None,a.allow_margin) for a in accts],'pos':sorted((p.account,p.conid,p.symbol,p.asset,str(p.quantity.normalize()),str(p.multiplier.normalize()),str(p.market_value_base.normalize()),str(p.fx_rate_to_base.normalize()) if p.fx_rate_to_base is not None else None) for p in pos_recs)}
-    sid=hashlib.sha256(json.dumps(sid_payload, sort_keys=True).encode('utf-8')).hexdigest()[:16]
+    sid=compute_snapshot_id(d, base_cur, accts, pos_recs)
     is_future=date.fromisoformat(d)>date.today()
     missing_cash=any(a.cash is None for a in accts)
     advice_ok=complete and not stale and not is_future and not missing_cash
@@ -482,7 +497,8 @@ def canonical_snapshot(portfolio_dict=None, tax_positions_fallback=None):
         c_val=dec(a['cash']) if a.get('cash') not in (None,'') else None
         if c_val is not None: tot_cash+=c_val
         allow_m=bool(a.get('allow_margin')) if 'allow_margin' in a else (bucket not in {'tfsa','rrsp','fhsa'})
-        accts.append(AccountRecord(account=name, tax_bucket=bucket, nav=dec(a['nav']), cash=c_val, allow_margin=allow_m, source=str(a.get('source') or '')))
+        bp_val=dec(a['buying_power']) if a.get('buying_power') not in (None,'') else None
+        accts.append(AccountRecord(account=name, tax_bucket=bucket, nav=dec(a['nav']), cash=c_val, allow_margin=allow_m, buying_power=bp_val, source=str(a.get('source') or '')))
     raw_pos=snap.get('positions')
     declared_cnt=snap.get('position_count')
     if raw_pos is not None and declared_cnt is not None and int(declared_cnt)>len(raw_pos):
@@ -514,8 +530,7 @@ def canonical_snapshot(portfolio_dict=None, tax_positions_fallback=None):
             market_value_base=val_b, underlying_price=und_px, underlying_currency=und_cur,
             fx_rate_to_base=fx_val, delta=d_val, source=str(p.get('source') or '')
         ))
-    sid_payload={'as_of':snap.get('as_of'),'nav':str(snap['nav']),'accts':[(a.account,str(a.nav),str(a.cash)) for a in accts],'pos':[(p.account,p.conid,str(p.quantity),str(p.market_value_base)) for p in pos_recs]}
-    sid=hashlib.sha256(json.dumps(sid_payload, sort_keys=True).encode('utf-8')).hexdigest()[:16]
+    sid=compute_snapshot_id(snap.get('as_of'), base_cur, accts, pos_recs)
     return PortfolioSnapshot(
         snapshot_id=sid,
         as_of=snap.get('as_of'),

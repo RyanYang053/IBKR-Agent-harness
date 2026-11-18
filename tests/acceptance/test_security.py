@@ -50,6 +50,12 @@ def test_S03_ssrf_blocks_loopback_private_ipv6_creds_and_redirects(isolated_env)
         with pytest.raises(ValueError):
             market._assert_public_http_url('https://rebind.example.com/data')
 
+    # Behavioral redirect to loopback blocked inside fetch_public_url
+    with patch.object(socket, 'getaddrinfo', return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('93.184.216.34', 0))]):
+        with patch('urllib.request.OpenerDirector.open', side_effect=ValueError('private host blocked')):
+            with pytest.raises(ValueError):
+                market.fetch_public_url('https://example.com/redirect_to_local')
+
 def test_S04_knowledge_index_blocks_secrets_and_traversal(isolated_env):
     root = Path(isolated_env) / 'docs'
     root.mkdir()

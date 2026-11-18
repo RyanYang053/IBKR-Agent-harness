@@ -44,6 +44,15 @@ def test_W03_crash_recovery_after_claim_and_ttl_expiry(isolated_env):
     rec = ops.approve_workflow(wf['run_id'], 'op')
     assert rec['status'] == 'completed' and rec['committed_memory_id'] is not None
 
+    # Active non-expired owner lease prevents recovery takeover
+    wf_lease = ops.run_workflow('equity_valuation_and_expectations', {'symbol': 'QQQ', 'propose_thesis': 'Lease check', 'falsifier': 'Break'})
+    future_exp = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+    with core.db('ops') as c:
+        c.execute("UPDATE workflow_runs SET status='approving' WHERE run_id=?", (wf_lease['run_id'],))
+        c.execute("INSERT INTO approval_intents(run_id,decision,operator_note,memory_id,created_at,updated_at,lease_owner,lease_expires_at) VALUES(?,?,?,?,?,?,?,?)", (wf_lease['run_id'], 'approving', 'op', None, core.now(), core.now(), 'active_owner_1', future_exp))
+    with pytest.raises(ValueError, match='active lease owner'):
+        ops.approve_workflow(wf_lease['run_id'], 'steal')
+
     # Expired TTL blocked
     wf_exp = ops.run_workflow('equity_valuation_and_expectations', {'symbol': 'QQQ', 'propose_thesis': 'Expired test', 'falsifier': 'Break'})
     old_ts = (datetime.now(timezone.utc) - timedelta(hours=100)).isoformat()
@@ -53,12 +62,30 @@ def test_W03_crash_recovery_after_claim_and_ttl_expiry(isolated_env):
         ops.approve_workflow(wf_exp['run_id'], 'late')
 
 def test_W04_ic_memo_blocks_failed_allocator_or_blocked_gate(isolated_env):
-    # Stale/missing ledger -> IC memo acceptance_passed=False and approve_workflow refuses
-    wf = ops.run_workflow('investment_committee_memo', {'symbol': 'QQQ', 'amount_base': '500'})
-    state = ops.get_workflow_run(wf['run_id'])
-    assert state['acceptance_passed'] == 0
+    # Healthy portfolio with clear trade gate, individually missing DCF, failed allocator, or missing falsifier
+    d = date.today().isoformat()
+    with core.db('finance') as c:
+        finance.schema(c)
+        c.execute('INSERT INTO sources VALUES(?,?)', ('s', d + 'T10:00:00'))
+        c.execute('INSERT INTO nav VALUES(?,?,?,?,?,?)', ('margin', d, 'CAD', '5000', '5000', 's'))
+        c.execute('INSERT INTO nav VALUES(?,?,?,?,?,?)', ('tfsa', d, 'CAD', '5000', '5000', 's'))
+        c.execute('INSERT INTO snapshots VALUES(?,?,?,1)', ('margin', d, 's'))
+        c.execute('INSERT INTO snapshots VALUES(?,?,?,1)', ('tfsa', d, 's'))
+    # 1. Missing DCF (no revenue_t0/shares) -> acceptance_passed=0, cannot approve
+    wf_nodcf = ops.run_workflow('investment_committee_memo', {'symbol': 'QQQ', 'amount_base': '500', 'account': 'margin', 'falsifier': 'Margin < 10%'})
+    assert ops.get_workflow_run(wf_nodcf['run_id'])['acceptance_passed'] == 0
     with pytest.raises(ValueError):
-        ops.approve_workflow(wf['run_id'], 'try approve blocked')
+        ops.approve_workflow(wf_nodcf['run_id'], 'try nodcf')
+    # 2. Missing falsifier even with DCF -> acceptance_passed=0, cannot approve
+    wf_nofals = ops.run_workflow('investment_committee_memo', {'symbol': 'QQQ', 'amount_base': '500', 'account': 'margin', 'revenue_t0': '1000', 'shares': '100', 'falsifier': ''})
+    assert ops.get_workflow_run(wf_nofals['run_id'])['acceptance_passed'] == 0
+    with pytest.raises(ValueError):
+        ops.approve_workflow(wf_nofals['run_id'], 'try nofals')
+    # 3. Complete valid IC memo -> acceptance_passed=1 and human approval commits journal
+    wf_ok = ops.run_workflow('investment_committee_memo', {'symbol': 'QQQ', 'amount_base': '500', 'account': 'margin', 'revenue_t0': '1000', 'shares': '100', 'falsifier': 'Margin < 10%'})
+    assert ops.get_workflow_run(wf_ok['run_id'])['acceptance_passed'] == 1
+    app = ops.approve_workflow(wf_ok['run_id'], 'valid ic approval')
+    assert app['status'] == 'completed' and app['committed_memory_id'] is not None
 
 def test_W05_monitoring_dedup_alerts_and_scheduled_jobs(isolated_env):
     a1 = ops.emit_alert('opp:QQQ', 'QQQ', 'info', 'Test', 'Detail')

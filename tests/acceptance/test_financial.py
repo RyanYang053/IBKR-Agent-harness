@@ -44,6 +44,7 @@ def test_F01_untruncated_analytics_invariant_to_max_tool_rows(isolated_env, monk
     assert len(snap1.positions) == 55 and snap1.snapshot_id == snap50.snapshot_id
     assert exp1['gross_value_base'] == exp50['gross_value_base'] == '5500'
     assert tax1['count'] == tax50['count'] == 55
+    assert tax1['positions'][0]['unrealized_pl_base_statement_fx'] is not None
     assert pol1['exposure_summary'] == pol50['exposure_summary']
 
 def test_F02_consistent_snapshot_read_and_non_overwriting_historical_import(isolated_env):
@@ -135,6 +136,13 @@ def test_F07_account_buying_power_and_non_margin_tfsa(isolated_env):
         quant.simulate_allocation(snap, proposed_trades=[{'symbol': 'QQQ', 'action': 'BUY', 'amount_base': '100', 'estimated_fees_base': '1', 'account': 'tfsa'}])
     pol_res = quant.evaluate_policy(snap, {'symbol': 'QQQ', 'action': 'BUY', 'amount_base': '100', 'estimated_fees_base': '1', 'account': 'tfsa'})
     assert any(b['rule'] == 'insufficient_account_buying_power' for b in pol_res['hard_blocks'])
+    # Margin buying power enforced
+    snap_bp = {'status': 'ok', 'advice_allowed': True, 'as_of': date.today().isoformat(), 'nav': '1000', 'currency': 'CAD', 'accounts': [{'account': 'margin', 'nav': '1000', 'cash': '250', 'buying_power': '250', 'allow_margin': True}], 'positions': []}
+    with pytest.raises(ValueError, match='insufficient_account_buying_power'):
+        quant.simulate_allocation(snap_bp, proposed_trades=[{'symbol': 'QQQ', 'action': 'BUY', 'amount_base': '300', 'account': 'margin'}])
+    # Registered withdrawal exceeding cash blocked
+    with pytest.raises(ValueError, match='withdrawal_exceeds_registered_cash'):
+        quant.simulate_allocation(snap, cash_contribution=-200, contribution_account='tfsa')
 
 def test_F08_option_delta_notional_zero_premium_and_invalid_greeks(isolated_env):
     snap = {

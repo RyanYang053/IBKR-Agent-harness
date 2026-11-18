@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import hashlib, json
 from .core import bounded, config, db, now
-from .finance import AccountRecord, PortfolioSnapshot, PositionRecord, dec, load_full_portfolio_snapshot
+from .finance import AccountRecord, PortfolioSnapshot, PositionRecord, compute_snapshot_id, dec, load_full_portfolio_snapshot
 
 FORBIDDEN_BROKER_METHODS={'placeOrder','cancelOrder','reqGlobalCancel','exerciseOptions'}
 
@@ -19,9 +19,16 @@ def schema(c):
         positions_json TEXT NOT NULL,
         greeks_json TEXT NOT NULL,
         entitlements_json TEXT NOT NULL,
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL,
+        capture_status TEXT NOT NULL DEFAULT 'partial',
+        live_verified INTEGER NOT NULL DEFAULT 0,
+        incomplete_callbacks_json TEXT NOT NULL DEFAULT '[]'
     );
     ''')
+    cols={r[1] for r in c.execute('PRAGMA table_info(broker_snapshots)')}
+    if 'capture_status' not in cols: c.execute("ALTER TABLE broker_snapshots ADD COLUMN capture_status TEXT NOT NULL DEFAULT 'partial'")
+    if 'live_verified' not in cols: c.execute('ALTER TABLE broker_snapshots ADD COLUMN live_verified INTEGER NOT NULL DEFAULT 0')
+    if 'incomplete_callbacks_json' not in cols: c.execute("ALTER TABLE broker_snapshots ADD COLUMN incomplete_callbacks_json TEXT NOT NULL DEFAULT '[]'")
 
 class BrokerReadOnlyAdapter:
     """Base read-only brokerage interface. Subclasses must never implement order-placement methods."""
@@ -82,18 +89,21 @@ class ReplayBrokerAdapter(BrokerReadOnlyAdapter):
     def disconnect(self):
         self._connected=False
 
-def _persist_broker_snapshot(adapter_name, as_of, accounts, positions, greeks, entitlements):
-    payload={'adapter':adapter_name,'as_of':as_of,'accounts':accounts,'positions':positions,'greeks':greeks}
+def _persist_broker_snapshot(adapter_name, as_of, accounts, positions, greeks, entitlements, capture_status='partial', live_verified=False, incomplete_callbacks=None):
+    payload={'adapter':adapter_name,'as_of':as_of,'accounts':accounts,'positions':positions,'greeks':greeks,'capture_status':capture_status,'live_verified':bool(live_verified)}
     sid='brk_'+hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode('utf-8')).hexdigest()[:16]
     with db('finance') as c:
         schema(c)
-        c.execute('INSERT OR REPLACE INTO broker_snapshots VALUES(?,?,?,?,?,?,?,?)',(
+        c.execute('INSERT OR REPLACE INTO broker_snapshots(snapshot_id,adapter,as_of,accounts_json,positions_json,greeks_json,entitlements_json,created_at,capture_status,live_verified,incomplete_callbacks_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)',(
             sid, adapter_name, as_of,
             json.dumps(accounts, ensure_ascii=False),
             json.dumps(positions, ensure_ascii=False),
             json.dumps(greeks, ensure_ascii=False),
             json.dumps(entitlements, ensure_ascii=False),
-            now()
+            now(),
+            str(capture_status),
+            1 if (live_verified and capture_status=='ok') else 0,
+            json.dumps(incomplete_callbacks or [], ensure_ascii=False)
         ))
     return sid
 
@@ -106,19 +116,25 @@ def sync_broker_replay(fixture_payload):
         accts={aid:adapter.account_summary(aid) for aid in adapter.list_managed_accounts()}
         pos=adapter.positions()
         greeks={str(p['conid']):adapter.option_greeks(p['conid']) for p in pos if str(p.get('asset','')).upper()=='OPT'}
-        sid=_persist_broker_snapshot(adapter.adapter_name, h['as_of'], accts, pos, greeks, h['entitlements'])
-        return {'status':'ok','snapshot_id':sid,'adapter':adapter.adapter_name,'as_of':h['as_of'],'accounts':len(accts),'positions':len(pos),'entitlements':h['entitlements'],'orders':'disabled'}
+        sid=_persist_broker_snapshot(adapter.adapter_name, h['as_of'], accts, pos, greeks, h['entitlements'], capture_status='replay', live_verified=False)
+        return {'status':'ok','capture_status':'replay','live_verified':False,'snapshot_id':sid,'adapter':adapter.adapter_name,'as_of':h['as_of'],'accounts':len(accts),'positions':len(pos),'entitlements':h['entitlements'],'orders':'disabled'}
     finally:
         adapter.disconnect()
 
 def latest_broker_snapshot():
     with db('finance') as c:
         schema(c)
-        row=c.execute('SELECT * FROM broker_snapshots ORDER BY created_at DESC LIMIT 1').fetchone()
+        row=c.execute('SELECT * FROM broker_snapshots ORDER BY rowid DESC LIMIT 1').fetchone()
     if not row:
-        return {'status':'unavailable','reason':'no_broker_snapshot_recorded','live_acceptance_status':'offline_only_not_connected'}
+        return {'status':'unavailable','capture_status':'unavailable','live_verified':False,'reason':'no_broker_snapshot_recorded','live_acceptance_status':'offline_only_not_connected'}
+    cap_st=row['capture_status'] if 'capture_status' in row.keys() else ('replay' if row['adapter']=='offline_replay' else 'partial')
+    lv=bool(row['live_verified']) if 'live_verified' in row.keys() else False
+    inc=json.loads(row['incomplete_callbacks_json']) if 'incomplete_callbacks_json' in row.keys() else []
     return {
-        'status':'ok',
+        'status':'ok' if cap_st in {'ok','replay'} else cap_st,
+        'capture_status':cap_st,
+        'live_verified':lv and cap_st=='ok' and row['adapter']=='ibkr_tws_readonly',
+        'incomplete_callbacks':inc,
         'snapshot_id':row['snapshot_id'],
         'adapter':row['adapter'],
         'as_of':row['as_of'],
@@ -375,7 +391,7 @@ def sync_broker_live(host='127.0.0.1', port=7497, client_id=19):
         greeks={str(cid):adapter.option_greeks(cid) for cid in opt_cids}
         h=adapter.health()
         live_ok=bool(h['connected'] and not h['partial'])
-        sid=_persist_broker_snapshot(adapter.adapter_name, now(), accts, pos, greeks, h['entitlements'])
+        sid=_persist_broker_snapshot(adapter.adapter_name, now(), accts, pos, greeks, h['entitlements'], capture_status='ok' if live_ok else 'partial', live_verified=live_ok, incomplete_callbacks=h['incomplete_callbacks'])
         return {'status':'ok' if live_ok else 'partial','snapshot_id':sid,'adapter':adapter.adapter_name,'accounts':len(accts),'positions':len(pos),'live_verified':live_ok,'incomplete_callbacks':h['incomplete_callbacks'],'orders':'disabled'}
     finally:
         adapter.disconnect()
@@ -383,16 +399,23 @@ def sync_broker_live(host='127.0.0.1', port=7497, client_id=19):
 def broker_state_for_risk():
     """Return latest broker snapshot metadata & option Greeks for risk enrichment, never overwriting Flex history."""
     brk=latest_broker_snapshot()
-    if brk.get('status')!='ok':
-        return {'status':'unavailable','live_verified':False,'greeks':{}}
-    return {'status':'ok','snapshot_id':brk['snapshot_id'],'as_of':brk['as_of'],'entitlements':brk['entitlements'],'accounts':brk['accounts'],'greeks':brk['greeks'],'live_verified':brk['adapter']=='ibkr_tws_readonly'}
+    if brk.get('capture_status') not in {'ok','replay'}:
+        return {'status':brk.get('capture_status','unavailable'),'live_verified':False,'capture_status':brk.get('capture_status','unavailable'),'greeks':{}}
+    return {'status':'ok','capture_status':brk['capture_status'],'snapshot_id':brk['snapshot_id'],'as_of':brk['as_of'],'entitlements':brk['entitlements'],'accounts':brk['accounts'],'greeks':brk['greeks'],'live_verified':bool(brk.get('live_verified'))}
 
 def enrich_snapshot_with_broker(csnap):
-    """Enrich a Flex PortfolioSnapshot with latest live broker option Greeks and underlying prices without mutating Flex NAV/history."""
+    """Enrich a Flex PortfolioSnapshot ONLY with validated live broker option Greeks and margin state; never enriches from partial or replay captures."""
     b_state=broker_state_for_risk()
-    if b_state.get('status')!='ok' or not b_state.get('greeks'):
+    if not b_state.get('live_verified') or b_state.get('capture_status')!='ok':
         return csnap
-    g_map=b_state['greeks']
+    g_map=b_state.get('greeks') or {}
+    acct_map=config().get('finance',{}).get('accounts') or {}
+    brk_accts={acct_map.get(k,k):v for k,v in (b_state.get('accounts') or {}).items()}
+    new_accts=[]
+    for a in csnap.accounts:
+        ba=brk_accts.get(a.account) or {}
+        bp=dec(ba['BuyingPower']) if ba.get('BuyingPower') not in (None,'') else a.buying_power
+        new_accts.append(AccountRecord(account=a.account, tax_bucket=a.tax_bucket, nav=a.nav, cash=a.cash, allow_margin=a.allow_margin, buying_power=bp, source=a.source))
     new_pos=[]
     for p in csnap.positions:
         g=g_map.get(p.conid)
@@ -400,15 +423,17 @@ def enrich_snapshot_with_broker(csnap):
             new_pos.append(PositionRecord(
                 account=p.account, conid=p.conid, symbol=p.symbol, asset=p.asset, currency=p.currency,
                 quantity=p.quantity, multiplier=p.multiplier, market_value_base=p.market_value_base,
+                underlying_conid=p.underlying_conid, cost_basis=p.cost_basis,
                 underlying_price=dec(g['underlying_price']) if g.get('underlying_price') is not None else p.underlying_price,
                 underlying_currency=p.underlying_currency, fx_rate_to_base=p.fx_rate_to_base,
                 delta=dec(g['delta']), source=f"{p.source}+broker:{b_state['snapshot_id']}"
             ))
         else:
             new_pos.append(p)
+    new_sid=compute_snapshot_id(csnap.as_of, csnap.currency, new_accts, new_pos)
     return PortfolioSnapshot(
-        snapshot_id=f"{csnap.snapshot_id}_brk", as_of=csnap.as_of, status=csnap.status,
+        snapshot_id=new_sid, as_of=csnap.as_of, status=csnap.status,
         stale=csnap.stale, advice_allowed=csnap.advice_allowed, positions_complete=csnap.positions_complete,
-        currency=csnap.currency, nav=csnap.nav, cash=csnap.cash, accounts=csnap.accounts,
+        currency=csnap.currency, nav=csnap.nav, cash=csnap.cash, accounts=tuple(new_accts),
         positions=tuple(new_pos), limitations=csnap.limitations
     )

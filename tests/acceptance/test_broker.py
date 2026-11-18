@@ -69,11 +69,23 @@ def test_B01_tws_adapter_callbacks_and_timeout(isolated_env, monkeypatch):
     ad_to.disconnect()
 
 def test_B02_partial_capture_never_marked_live_verified(isolated_env, monkeypatch):
+    from importlib import reload
     _install_fake_ibapi(monkeypatch, timeout_acct=True)
     orig_cls = broker.IBKRTWSAdapter
     with patch.object(broker, 'IBKRTWSAdapter', side_effect=lambda *a, **kw: orig_cls(*a, timeout_sec=0.05)):
         res = broker.sync_broker_live()
     assert res['status'] == 'partial' and res['live_verified'] is False
+    # Reload broker module to simulate process restart; persisted state must remain partial & not live_verified
+    reload(broker)
+    persisted = broker.latest_broker_snapshot()
+    b_state = broker.broker_state_for_risk()
+    assert persisted['capture_status'] == 'partial' and persisted['live_verified'] is False
+    assert b_state['live_verified'] is False and len(persisted['incomplete_callbacks']) >= 1
+
+    # Replay capture also never becomes live_verified
+    rep = broker.sync_broker_replay({'as_of': date.today().isoformat(), 'accounts': {}, 'positions': []})
+    assert rep['capture_status'] == 'replay' and rep['live_verified'] is False
+    assert broker.latest_broker_snapshot()['live_verified'] is False
 
 def test_B03_reconciliation_per_account_and_currency(isolated_env):
     d = date.today().isoformat()
@@ -110,7 +122,7 @@ def test_B04_quote_reqid_9001_vs_conid_9001_and_sentinel_delta(isolated_env, mon
     assert ad.option_greeks('9001')['status'] == 'unavailable' and ad.option_greeks('9001')['delta'] is None
     ad.disconnect()
 
-def test_B05_broker_enrichment_preserves_flex_and_updates_hash(isolated_env):
+def test_B05_broker_enrichment_preserves_flex_and_updates_hash(isolated_env, monkeypatch):
     d = date.today().isoformat()
     with core.db('finance') as c:
         finance.schema(c)
@@ -119,13 +131,19 @@ def test_B05_broker_enrichment_preserves_flex_and_updates_hash(isolated_env):
         c.execute('INSERT INTO nav VALUES(?,?,?,?,?,?)', ('tfsa', d, 'CAD', '0', '0', 's'))
         c.execute('INSERT INTO snapshots VALUES(?,?,?,1)', ('margin', d, 's'))
         c.execute('INSERT INTO snapshots VALUES(?,?,?,1)', ('tfsa', d, 's'))
-        c.execute('INSERT INTO positions VALUES(?,?,?,?,?,?,?,?,?,?,?)', ('margin', d, 'OPT1', 'OPT1', 'OPT', 'CAD', '1', '500', 'OPT1', '500', '1'))
+        c.execute('INSERT INTO positions VALUES(?,?,?,?,?,?,?,?,?,?,?)', ('margin', d, '9001', 'OPT_A', 'OPT', 'CAD', '1', '500', '1000', '500', '1'))
     base_snap = finance.load_full_portfolio_snapshot()
-    broker.sync_broker_replay({'as_of': d, 'entitlements': {'options_greeks_live': True}, 'accounts': {}, 'positions': [{'accountId': 'U0000001', 'conid': 'OPT1', 'asset': 'OPT', 'position': '1'}], 'greeks': {'OPT1': {'delta': 0.2, 'underlying_price': 100}}})
+    # Replay capture must NOT enrich canonical snapshot
+    broker.sync_broker_replay({'as_of': d, 'entitlements': {'options_greeks_live': True}, 'accounts': {}, 'positions': [{'accountId': 'U0000001', 'conid': '9001', 'asset': 'OPT', 'position': '1'}], 'greeks': {'9001': {'delta': 0.2, 'underlying_price': 100}}})
+    assert broker.enrich_snapshot_with_broker(base_snap).snapshot_id == base_snap.snapshot_id
+
+    # Valid live capture enriches and produces distinct snapshot_ids for delta=0.2 vs delta=0.8
+    broker._persist_broker_snapshot('ibkr_tws_readonly', d, {'U0000001': {'BuyingPower': '4000'}}, [], {'9001': {'delta': 0.2, 'underlying_price': 100, 'status': 'live'}}, {'options_greeks_live': True}, capture_status='ok', live_verified=True)
     s1 = broker.enrich_snapshot_with_broker(base_snap)
-    broker.sync_broker_replay({'as_of': d, 'entitlements': {'options_greeks_live': True}, 'accounts': {}, 'positions': [{'accountId': 'U0000001', 'conid': 'OPT1', 'asset': 'OPT', 'position': '1'}], 'greeks': {'OPT1': {'delta': 0.8, 'underlying_price': 100}}})
+    broker._persist_broker_snapshot('ibkr_tws_readonly', d, {'U0000001': {'BuyingPower': '4000'}}, [], {'9001': {'delta': 0.8, 'underlying_price': 100, 'status': 'live'}}, {'options_greeks_live': True}, capture_status='ok', live_verified=True)
     s2 = broker.enrich_snapshot_with_broker(base_snap)
-    assert s1.positions[0].delta != s2.positions[0].delta
+    assert s1.positions[0].delta == Decimal('0.2') and s2.positions[0].delta == Decimal('0.8')
+    assert s1.snapshot_id != base_snap.snapshot_id and s1.snapshot_id != s2.snapshot_id
 
 def test_B06_option_chain_qualification_and_staleness(isolated_env, monkeypatch):
     _install_fake_ibapi(monkeypatch)

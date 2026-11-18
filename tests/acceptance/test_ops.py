@@ -36,6 +36,8 @@ def test_O03_cli_error_exits_nonzero_and_eval_subprocess_isolation(isolated_env)
     assert r.returncode == 0
     r_bad = subprocess.run([sys.executable, '-m', 'personal_agent.cli', 'run-workflow', 'nonexistent_wf'], capture_output=True, text=True)
     assert r_bad.returncode != 0
+    r_blk = subprocess.run([sys.executable, '-m', 'personal_agent.cli', 'shadow-check'], capture_output=True, text=True)
+    assert r_blk.returncode == 2 and json.loads(r_blk.stdout)['status'] == 'blocked'
 
 def test_O04_legacy_db_migration_idempotent(isolated_env):
     with core.db('ops') as c:

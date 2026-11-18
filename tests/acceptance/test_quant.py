@@ -10,6 +10,16 @@ def test_Q01_bars_open_close_provenance_and_atomic_backfill(isolated_env):
     b = market.bars('Q01T', 10)
     assert len(b) == 1 and b[0]['open'] == '100' and b[0]['adj_basis'] == 'split_and_dividend_adj'
 
+    # Missing open_px stays None and blocks next-bar-open backtest
+    d0 = date(2026, 1, 2)
+    with core.db('market') as c:
+        market.schema(c)
+        for i in range(45):
+            c.execute('INSERT INTO bars(symbol,timeframe,ts,close,currency,provider,freshness,open_px,adj_basis) VALUES(?,?,?,?,?,?,?,?,?)',
+                ('NOOPEN', '1Day', (d0 + timedelta(days=i)).isoformat(), '100', 'USD', 'yfinance', 'historical', None, 'split_and_dividend_adj'))
+    assert market.bars('NOOPEN', 5)[0]['open'] is None
+    assert quant.backtest_strategies('NOOPEN')['status'] == 'missing_open_price'
+
 def test_Q02_backtest_next_bar_open_and_financing_cost_monotonicity(isolated_env):
     d0 = date(2026, 1, 2)
     bars = [{'ts': (d0 + timedelta(days=i)).isoformat(), 'open': str(100.0 * (1.002 ** i)), 'close': str(100.1 * (1.002 ** i)), 'currency': 'USD'} for i in range(60)]

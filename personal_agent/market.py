@@ -270,7 +270,7 @@ def bars(symbol, limit=120):
     with db('market') as c:
         schema(c)
         rows=c.execute('SELECT ts,open_px,close,currency,provider,freshness,adj_basis FROM bars WHERE symbol=? AND timeframe=? ORDER BY ts DESC LIMIT ?',(symbol,'1Day',max(1,min(int(limit),10000)))).fetchall()
-    return [{'symbol':symbol,'date':row['ts'],'open':row['open_px'] or row['close'],'close':row['close'],'currency':row['currency'],'provider':row['provider'],'freshness':'historical','adj_basis':row['adj_basis'] or 'unadjusted_legacy'} for row in reversed(rows)]
+    return [{'symbol':symbol,'date':row['ts'],'open':row['open_px'],'close':row['close'],'currency':row['currency'],'provider':row['provider'],'freshness':'historical','adj_basis':row['adj_basis'] or 'unadjusted_legacy'} for row in reversed(rows)]
 
 def sync_news(symbol):
     token=_env('finnhub_key_env')
@@ -834,12 +834,16 @@ def fetch_public_url(url, max_chars=4500):
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             _assert_public_http_url(newurl)
             return super().redirect_request(req, fp, code, msg, headers, newurl)
-    opener=urllib.request.build_opener(NoCrossHostRedirect)
+    opener=urllib.request.build_opener(urllib.request.ProxyHandler({}), NoCrossHostRedirect)
     req=urllib.request.Request(clean_url, headers={'User-Agent':'Mozilla/5.0 (compatible; PersonalInvestmentResearch/0.1)'})
     try:
         with opener.open(req, timeout=20) as resp:
             ctype=(resp.headers.get('Content-Type') or '').lower()
-            raw=resp.read(400000).decode('utf-8','ignore')
+            raw_bytes=resp.read(400001)
+            if len(raw_bytes)>400000: raise ValueError('response_exceeds_size_limit')
+            raw=raw_bytes.decode('utf-8','ignore')
+    except ValueError:
+        raise
     except Exception as exc:
         return {'url':clean_url,'status':'error','error':type(exc).__name__,'untrusted':True}
     if 'html' in ctype or '<html' in raw[:500].lower():
