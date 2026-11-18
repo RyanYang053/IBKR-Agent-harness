@@ -1,5 +1,5 @@
 """Local market data. Live means a fresh Alpaca IEX quote. Nothing else is promoted to live."""
-import difflib, ipaddress, json, os, re, socket, time, urllib.error, urllib.parse, urllib.request, warnings
+import difflib, hashlib, ipaddress, json, os, re, socket, time, urllib.error, urllib.parse, urllib.request, warnings
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from html.parser import HTMLParser
@@ -23,6 +23,38 @@ def schema(c):
     CREATE TABLE IF NOT EXISTS filing_sections(symbol TEXT, form TEXT, filing_date TEXT, accession TEXT, section TEXT, content TEXT, fetched_at TEXT, PRIMARY KEY(symbol,accession,section));
     CREATE TABLE IF NOT EXISTS cik_map(symbol TEXT PRIMARY KEY, cik TEXT, updated_at TEXT);
     CREATE TABLE IF NOT EXISTS throttle(provider TEXT PRIMARY KEY, ts TEXT);
+    CREATE TABLE IF NOT EXISTS evidence_ledger(
+        evidence_id TEXT PRIMARY KEY,
+        symbol TEXT NOT NULL,
+        source_type TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        url TEXT NOT NULL DEFAULT '',
+        cik TEXT NOT NULL DEFAULT '',
+        period TEXT NOT NULL DEFAULT '',
+        filed_at TEXT NOT NULL,
+        retrieved_at TEXT NOT NULL,
+        available_at TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        title TEXT NOT NULL DEFAULT '',
+        excerpt TEXT NOT NULL DEFAULT '',
+        parser_version TEXT NOT NULL DEFAULT 'v1',
+        conflict_flag INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS financial_statements_pit(
+        symbol TEXT NOT NULL,
+        period TEXT NOT NULL,
+        statement_type TEXT NOT NULL,
+        concept TEXT NOT NULL,
+        value REAL NOT NULL,
+        currency TEXT NOT NULL DEFAULT 'USD',
+        unit TEXT NOT NULL DEFAULT 'USD',
+        accounting_standard TEXT NOT NULL DEFAULT 'US-GAAP',
+        filed_at TEXT NOT NULL,
+        available_at TEXT NOT NULL,
+        revision_seq INTEGER NOT NULL DEFAULT 1,
+        evidence_id TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY(symbol, period, concept, revision_seq)
+    );
     ''')
     b_cols={r[1] for r in c.execute('PRAGMA table_info(bars)')}
     if 'open_px' not in b_cols: c.execute('ALTER TABLE bars ADD COLUMN open_px TEXT')
@@ -731,4 +763,90 @@ def system_health():
         },
         'external_cloud_llm_keys':cloud_routes,
         'privacy_boundary':'Private ledger tools stay on Local Gyro-M (personal-investment preset). Use public-research preset when selecting External Cloud LLM APIs.'
+    }
+
+def record_evidence(symbol, source_type, provider, title, excerpt='', url='', cik='', period='', filed_at='', available_at='', parser_version='v1', conflict_flag=False):
+    """Store an immutable Point-in-Time public evidence artifact with content hash and availability cutoff."""
+    sym=str(symbol or '').strip().upper()
+    if not sym or not title: raise ValueError('symbol and title required')
+    ret_ts=datetime.now(timezone.utc).isoformat()
+    f_ts=str(filed_at or ret_ts)
+    av_ts=str(available_at or f_ts)
+    c_hash=hashlib.sha256(f'{sym}|{source_type}|{provider}|{period}|{title}|{excerpt}'.encode('utf-8')).hexdigest()[:24]
+    ev_id=f'ev_{c_hash[:16]}'
+    with db('market') as c:
+        schema(c)
+        c.execute('''INSERT OR IGNORE INTO evidence_ledger
+            (evidence_id,symbol,source_type,provider,url,cik,period,filed_at,retrieved_at,available_at,content_hash,title,excerpt,parser_version,conflict_flag)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+            (ev_id,sym,str(source_type),str(provider),str(url),str(cik),str(period),f_ts,ret_ts,av_ts,c_hash,str(title),str(excerpt)[:4000],str(parser_version),1 if conflict_flag else 0))
+    return {'evidence_id':ev_id,'symbol':sym,'available_at':av_ts,'content_hash':c_hash}
+
+def get_evidence(symbol, as_of='', limit=20):
+    sym=str(symbol or '').strip().upper()
+    cutoff=str(as_of or datetime.now(timezone.utc).isoformat())
+    with db('market') as c:
+        schema(c)
+        rows=c.execute('SELECT * FROM evidence_ledger WHERE symbol=? AND available_at<=? ORDER BY available_at DESC LIMIT ?',(sym,cutoff,max(1,min(int(limit),100)))).fetchall()
+    return [dict(r) for r in rows]
+
+def record_financial_fact(symbol, period, statement_type, concept, value, filed_at, available_at='', currency='USD', unit='USD', accounting_standard='US-GAAP', evidence_id=''):
+    """Append a Point-in-Time standardized financial statement fact; restatements increment revision_seq without overwriting prior vintages."""
+    sym=str(symbol or '').strip().upper(); per=str(period or '').strip().upper()
+    if not sym or not per or not concept: raise ValueError('symbol, period, and concept required')
+    val=float(value)
+    if val!=val or abs(val)==float('inf'): raise ValueError('finite numeric value required')
+    av_ts=str(available_at or filed_at)
+    with db('market') as c:
+        schema(c)
+        row=c.execute('SELECT max(revision_seq) AS m FROM financial_statements_pit WHERE symbol=? AND period=? AND concept=?',(sym,per,concept)).fetchone()
+        seq=(row['m']+1) if (row and row['m'] is not None) else 1
+        c.execute('''INSERT INTO financial_statements_pit
+            (symbol,period,statement_type,concept,value,currency,unit,accounting_standard,filed_at,available_at,revision_seq,evidence_id)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)''',
+            (sym,per,str(statement_type),str(concept),val,str(currency).upper(),str(unit),str(accounting_standard),str(filed_at),av_ts,seq,str(evidence_id)))
+    return {'symbol':sym,'period':per,'concept':concept,'value':val,'revision_seq':seq,'available_at':av_ts}
+
+def get_facts_pit(symbol, as_of='', period=''):
+    """Query Point-in-Time financial facts available on or before as_of, selecting the latest revision_seq eligible at that cutoff."""
+    sym=str(symbol or '').strip().upper()
+    cutoff=str(as_of or datetime.now(timezone.utc).isoformat())
+    with db('market') as c:
+        schema(c)
+        q='''SELECT f.* FROM financial_statements_pit f
+            INNER JOIN (
+                SELECT symbol, period, concept, MAX(revision_seq) AS max_seq
+                FROM financial_statements_pit
+                WHERE symbol=? AND available_at<=?'''+(' AND period=?' if period else '')+'''
+                GROUP BY symbol, period, concept
+            ) m ON f.symbol=m.symbol AND f.period=m.period AND f.concept=m.concept AND f.revision_seq=m.max_seq
+            ORDER BY f.period DESC, f.concept ASC'''
+        params=(sym,cutoff,period.upper()) if period else (sym,cutoff)
+        rows=[dict(r) for r in c.execute(q, params)]
+    return {'symbol':sym,'as_of':cutoff,'facts':rows,'count':len(rows)}
+
+def compute_ttm_and_ratios(symbol, as_of=''):
+    """Compute Trailing-Twelve-Month (TTM) aggregates and fundamental ratios strictly from Point-in-Time facts."""
+    pit=get_facts_pit(symbol, as_of=as_of)
+    facts=pit['facts']
+    q_by_per={}
+    for f in facts:
+        if 'Q' in f['period']:
+            q_by_per.setdefault(f['period'], {})[f['concept']]=f['value']
+    q_periods=sorted(q_by_per.keys(), reverse=True)[:4]
+    if len(q_periods)<4:
+        return {'symbol':pit['symbol'],'as_of':pit['as_of'],'status':'insufficient_quarters_for_ttm','quarters_found':len(q_periods)}
+    def _sum_q(concept):
+        vals=[q_by_per[p].get(concept) for p in q_periods]
+        return sum(vals) if all(v is not None for v in vals) else None
+    rev=_sum_q('Revenue'); ebit=_sum_q('OperatingIncome'); ocf=_sum_q('OperatingCashFlow'); capex=_sum_q('CapEx')
+    latest_q=q_by_per[q_periods[0]]
+    cash=latest_q.get('Cash'); debt=latest_q.get('TotalDebt'); eq=latest_q.get('ShareholdersEquity')
+    fcf=(ocf-abs(capex)) if (ocf is not None and capex is not None) else None
+    op_margin=(ebit/rev) if (ebit is not None and rev) else None
+    roic=(ebit*(1.0-0.21)/(debt+eq-cash)) if (ebit is not None and debt is not None and eq is not None and cash is not None and (debt+eq-cash)>0) else None
+    return {
+        'symbol':pit['symbol'],'as_of':pit['as_of'],'status':'ok','ttm_quarters':q_periods,
+        'ttm_metrics':{'revenue':rev,'operating_income':ebit,'operating_cash_flow':ocf,'capex':capex,'free_cash_flow':fcf},
+        'ratios':{'operating_margin':round(op_margin,4) if op_margin is not None else None,'roic_pre_tax_approx':round(roic,4) if roic is not None else None}
     }

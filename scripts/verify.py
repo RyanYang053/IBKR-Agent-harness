@@ -228,10 +228,10 @@ def knowledge_checks(home):
 
     # 9. Canonical PortfolioSnapshot, FX fail-closed, option FX delta-notional, crash-recoverable approval_intents, & DB migration
     with tempfile.TemporaryDirectory() as v_tmp:
-        from personal_agent import core, finance
+        from personal_agent import core, finance, market, decision, knowledge
         prev_h2 = os.environ.get('PERSONAL_AGENT_HOME')
         os.environ['PERSONAL_AGENT_HOME'] = v_tmp
-        reload(core); reload(finance); reload(quant); reload(ops)
+        reload(core); reload(finance); reload(market); reload(decision); reload(knowledge); reload(quant); reload(ops)
         # Missing FX fails closed
         with core.db('finance') as c:
             finance.schema(c)
@@ -274,8 +274,113 @@ def knowledge_checks(home):
         except ValueError:
             rej_after = True
         check('approval_intents crash recovery and reject race', rec_res.get('recovered') is True and rec_res['committed_memory_id'] == 777 and rej_after)
+
+        # v0.3.3 F01-F10 invariant tests: 55-position untruncated snapshot, transaction conservation, plan mode hard gate, concurrent approval, restore rehearsal
+        with core.db('finance') as c:
+            finance.schema(c)
+            c.execute('DELETE FROM nav'); c.execute('DELETE FROM positions'); c.execute('DELETE FROM snapshots')
+            today_s = date.today().isoformat()
+            c.execute('INSERT INTO nav VALUES(?,?,?,?,?,?)', ('margin', today_s, 'CAD', '1000', '0', 's55'))
+            c.execute('INSERT INTO nav VALUES(?,?,?,?,?,?)', ('tfsa', today_s, 'CAD', '1000', '0', 's55'))
+            c.execute('INSERT INTO snapshots VALUES(?,?,?,1)', ('margin', today_s, 's55'))
+            c.execute('INSERT INTO snapshots VALUES(?,?,?,1)', ('tfsa', today_s, 's55'))
+            for idx_p in range(55):
+                c.execute('INSERT INTO positions VALUES(?,?,?,?,?,?,?,?,?,?,?)', ('margin', today_s, f'C{idx_p:03d}', f'SYM{idx_p}', 'STK', 'CAD', '1', '10', f'C{idx_p:03d}', '10', '1'))
+        full55 = finance.load_full_portfolio_snapshot()
+        paged50 = finance.portfolio()
+        check('55-position untruncated snapshot vs bounded portfolio', len(full55.positions) == 55 and len(paged50['positions']) == 50 and paged50['has_more'] is True)
+
+        sim_res = quant.simulate_allocation(full55, cash_contribution=500, proposed_trades=[{'symbol': 'SYM0', 'action': 'BUY', 'amount_base': '500', 'account': 'margin'}], contribution_account='margin')
+        tfsa_after = next(a for a in sim_res.accounts if a.account == 'tfsa')
+        check('transaction simulation cash and nav conservation', sim_res.nav == Decimal('2500') and sim_res.cash == Decimal('0') and tfsa_after.nav == Decimal('1000'))
+
+        # Plan mode hard blocks 160% gross even on pre-simulated snapshot
+        gross160 = quant.evaluate_policy(snap_multi, investment_policy={**pol_cfg, 'max_gross_economic_leverage': 1.35}, mode='PROPOSED_PLAN')
+        check('plan mode hard blocks gross 160', gross160['status'] == 'blocked_policy_violation' and any(b['rule'] == 'max_gross_economic_leverage' for b in gross160['hard_blocks']))
+
+        # Concurrent 2-thread approve_workflow -> single journal record, loser blocked or idempotent
+        import concurrent.futures
+        wf_conc = ops.run_workflow('equity_valuation_and_expectations', {'symbol': 'QQQ', 'propose_thesis': 'Concurrent test', 'falsifier': 'Break'})
+        def _try_app(n):
+            try: return ('ok', ops.approve_workflow(wf_conc['run_id'], n))
+            except ValueError as e: return ('err', str(e))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            res_conc = list(pool.map(_try_app, ['t1', 't2']))
+        ok_cnt = sum(1 for k, _ in res_conc if k == 'ok')
+        with core.db('knowledge') as kc:
+            cnt_j = kc.execute('SELECT count(*) FROM memory WHERE approval_run_id=?', (wf_conc['run_id'],)).fetchone()[0]
+        check('concurrent approve single journal commit', ok_cnt >= 1 and cnt_j == 1)
+
+        # Backup & restore rehearsal
+        bk_v33 = core.backup_databases(Path(v_tmp) / 'bk_v33')
+        rst_v33 = core.restore_databases(bk_v33['backup_dir'], Path(v_tmp) / 'rst_v33')
+        check('backup and restore rehearsal', rst_v33['status'] == 'ok' and len(rst_v33['databases']) >= 2)
+
+        # v0.4.0 BrokerReadOnlyAdapter offline replay & live-to-flex reconciliation
+        from personal_agent import broker
+        brk_fixture = {
+            'as_of': date.today().isoformat() + 'T14:30:00+00:00',
+            'entitlements': {'equities_live': True, 'options_greeks_live': False},
+            'accounts': {
+                'U0000001': {'NetLiquidation': '1050', 'TotalCashValue': '50', 'AvailableFunds': '50', 'BuyingPower': '100', 'ExcessLiquidity': '50', 'currency': 'CAD'},
+                'U0000002': {'NetLiquidation': '1000', 'TotalCashValue': '1000', 'AvailableFunds': '1000', 'BuyingPower': '1000', 'ExcessLiquidity': '1000', 'currency': 'CAD'},
+            },
+            'positions': [
+                {'accountId': 'U0000001', 'conid': 'C000', 'symbol': 'SYM0', 'asset': 'STK', 'position': '2'},
+                {'accountId': 'U0000001', 'conid': 'OPT1', 'symbol': 'SYM0 CALL', 'asset': 'OPT', 'position': '1'},
+            ],
+            'greeks': {'OPT1': {'delta': 0.55}},
+        }
+        sync_b = broker.sync_broker_replay(brk_fixture)
+        latest_b = broker.latest_broker_snapshot()
+        rec_b = broker.reconcile_live_to_flex()
+        check('broker readonly replay and flex reconciliation', sync_b['status'] == 'ok' and latest_b['greeks']['OPT1']['status'] == 'entitlement_required' and rec_b['status'] == 'timing_or_position_differences' and len(rec_b['position_differences']) >= 2 and not any(hasattr(broker.ReplayBrokerAdapter, m) for m in broker.FORBIDDEN_BROKER_METHODS))
+
+        # v0.4.1 R01/R03/R04: ETF look-through, option chain & roll, Canadian ACB
+        lt = quant.etf_lookthrough_exposure({'SYM0': {'AAPL': 0.5, 'MSFT': 0.5}}, portfolio_snapshot=full55)
+        ch = quant.analyze_option_chain('QQQ', [
+            {'right': 'call', 'strike': 110, 'days_to_expiry': 45, 'bid': 1.6, 'ask': 1.8, 'open_interest': 50},
+            {'right': 'call', 'strike': 110, 'days_to_expiry': 45, 'bid': 2.0, 'ask': 1.5, 'open_interest': 50},
+        ], spot=100)
+        roll = quant.analyze_option_roll(100, 105, 10, 1.2, 115, 45, 2.0, contracts=1)
+        with core.db('finance') as c:
+            c.execute('INSERT INTO records VALUES(?,?,?,?,?)', ('margin', 'trade', 'acb1', json.dumps({'symbol': 'TESTACB', 'assetCategory': 'STK', 'buySell': 'BUY', 'quantity': '10', 'tradePrice': '100', 'currency': 'CAD', 'ibCommission': '5'}), 'syn'))
+            c.execute('INSERT INTO records VALUES(?,?,?,?,?)', ('margin', 'trade', 'acb2', json.dumps({'symbol': 'TESTACB', 'assetCategory': 'STK', 'buySell': 'SELL', 'quantity': '4', 'tradePrice': '120', 'currency': 'CAD', 'ibCommission': '2'}), 'syn'))
+        acb = decision.compute_canadian_acb('TESTACB', 'margin')
+        check('v0.4.1 etf lookthrough, option chain/roll, and acb', len(ch['eligible_contracts']) == 1 and len(ch['rejected_contracts']) == 1 and roll['net_roll_cashflow'] == 80.0 and Decimal(acb['realized_dispositions'][0]['realized_gain_base']) == Decimal('76.00'))
+
+        # v0.5.0 E01/E02 & v0.5.1 V02: PIT evidence & financial statements restatement + sector valuation
+        ev_doc = market.record_evidence('PITCO', '10-Q', 'sec_edgar', 'Q1 10-Q', 'Revenue 100', filed_at='2026-02-01', available_at='2026-02-01')
+        for q_i, q_per in enumerate(('2025Q2', '2025Q3', '2025Q4', '2026Q1')):
+            av = f'202{5 if q_i < 3 else 6}-0{(q_i*3)%9 + 1}-15'
+            market.record_financial_fact('PITCO', q_per, 'IS', 'Revenue', 100 + q_i*10, filed_at=av, available_at=av, evidence_id=ev_doc['evidence_id'])
+            market.record_financial_fact('PITCO', q_per, 'IS', 'OperatingIncome', 20 + q_i*2, filed_at=av, available_at=av)
+            market.record_financial_fact('PITCO', q_per, 'CF', 'OperatingCashFlow', 25, filed_at=av, available_at=av)
+            market.record_financial_fact('PITCO', q_per, 'CF', 'CapEx', 5, filed_at=av, available_at=av)
+        market.record_financial_fact('PITCO', '2026Q1', 'IS', 'Revenue', 95, filed_at='2026-05-01', available_at='2026-05-01')
+        pit_before = market.get_facts_pit('PITCO', as_of='2026-03-01', period='2026Q1')
+        pit_after = market.get_facts_pit('PITCO', as_of='2026-06-01', period='2026Q1')
+        ttm_res = market.compute_ttm_and_ratios('PITCO', as_of='2026-06-01')
+        ri = quant.residual_income_valuation('50', '0.15', '0.10')
+        sotp = quant.sotp_valuation([{'name': 'Cloud', 'ev': 800}, {'name': 'Ads', 'ev': 400}], net_debt='200', shares='100')
+        rev_b = next(f['value'] for f in pit_before['facts'] if f['concept'] == 'Revenue')
+        rev_a = next(f['value'] for f in pit_after['facts'] if f['concept'] == 'Revenue')
+        check('v0.5.0-v0.5.1 pit restatement, ttm, and sector valuation', rev_b == 130.0 and rev_a == 95.0 and ttm_res['status'] == 'ok' and quant.select_valuation_method('financials')['primary'] == 'residual_income' and ri['fair_value_per_share'] > 50 and sotp['per_share'] == 10.0)
+
+        # v0.6.0 A01/A03, v0.7.0 Q01-Q04, v1.0 P02: discovery, alert dedup, cashflow sim, forecast calibration, shadow check
+        disc_none = decision.discover_opportunities(['QQQ'], {})
+        disc_hit = decision.discover_opportunities(['QQQ', 'FAIL'], {'QQQ': {'roic': 0.22, 'fcf_growth': 0.15, 'valuation_discount_pct': 0.25, 'dilution_rate': 0.01}, 'FAIL': {'roic': 0.02, 'fcf_growth': -0.1, 'valuation_discount_pct': 0.30, 'dilution_rate': 0.08}})
+        al1 = ops.emit_alert('k1', 'QQQ', 'medium', 'Test alert', 'Detail')
+        al2 = ops.emit_alert('k1', 'QQQ', 'medium', 'Test alert', 'Detail')
+        p1 = knowledge.record_forecast_prediction('QQQ', 'Beat Q4 rev', '2026-12-31', 0.80)
+        p2 = knowledge.record_forecast_prediction('SPY', 'Rate cut', '2026-12-31', 0.40)
+        knowledge.resolve_forecast_prediction(p1['id'], 1)
+        brier = knowledge.brier_calibration_report()
+        sh_chk = ops.shadow_mode_check()
+        check('v0.6-v1.0 discovery, alerts, calibration, and shadow check', disc_none['status'] == 'no_compelling_opportunity' and disc_hit['candidates'][0]['symbol'] == 'QQQ' and al2['deduplicated'] is True and al2['hit_count'] == 2 and brier['resolved_count'] == 1 and brier['unresolved_count'] == 1 and sh_chk['orders'] == 'disabled')
+
         os.environ['PERSONAL_AGENT_HOME'] = prev_h2
-        reload(core); reload(finance); reload(quant); reload(ops)
+        reload(core); reload(finance); reload(market); reload(decision); reload(knowledge); reload(quant); reload(ops)
 
     ev = ops.run_eval_benchmark()
     check('evaluation harness 100pct', ev['passed'] == ev['total'] and ev['score_pct'] == 100.0, ev)

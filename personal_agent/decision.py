@@ -914,3 +914,104 @@ def counterfactual_attribution(days=90, account=None):
         'unpriced_closed_trades':unpriced[:10],
         'limitations':['Counterfactual replay holds start-of-window share counts untouched to as_of and values closed-out stocks using statement positions or cached historical closes; interim dividends on exited shares and cash interest reinvestment are excluded.']
     }
+
+def compute_canadian_acb(symbol=None, account=None):
+    """v0.4.1 R04: Pooled Adjusted Cost Base (ACB) by identical property from trade/corporate_action records with transaction FX and commissions."""
+    sym_filter=str(symbol or '').strip().upper() or None
+    cfg=config().get('finance',{})
+    base_cur=str(cfg.get('base_currency') or 'CAD').upper()
+    with db('finance') as c:
+        finance_schema(c)
+        q="SELECT account, category, record_id, payload FROM records WHERE category IN ('trade','corporate_action')"+(" AND account=?" if account else "")+" ORDER BY rowid ASC"
+        rows=c.execute(q, (account,) if account else ()).fetchall()
+    pools={}
+    realized=[]
+    for r in rows:
+        f=json.loads(r['payload'])
+        sym=str(f.get('symbol') or '').strip().upper()
+        if not sym or (sym_filter and sym!=sym_filter): continue
+        if str(f.get('assetCategory') or 'STK').upper()=='CASH': continue
+        bucket=_tax_bucket(r['account'])
+        key=(bucket, sym)
+        pool=pools.setdefault(key, {'shares':Decimal(0),'total_acb_base':Decimal(0)})
+        if r['category']=='trade':
+            side=str(f.get('buySell') or '').strip().upper()
+            qty=abs(dec(f.get('quantity') or '0'))
+            if qty==0 or f.get('tradePrice') in (None,''): continue
+            cur=str(f.get('currency') or base_cur).upper()
+            fx=Decimal('1') if cur==base_cur else dec(f.get('fxRateToBase') or '1')
+            mult=dec(f.get('multiplier') or '1')
+            gross_base=qty*dec(f['tradePrice'])*mult*fx
+            comm_base=abs(dec(f.get('ibCommission') or '0'))*(Decimal('1') if str(f.get('ibCommissionCurrency') or cur).upper()==base_cur else fx)
+            if side=='BUY':
+                pool['shares']+=qty
+                pool['total_acb_base']+=(gross_base+comm_base)
+            elif side=='SELL' and pool['shares']>0:
+                sell_qty=min(qty, pool['shares'])
+                acb_per_sh=pool['total_acb_base']/pool['shares']
+                acb_relieved=acb_per_sh*sell_qty
+                proceeds=gross_base-comm_base
+                gain=proceeds-acb_relieved
+                pool['shares']-=sell_qty
+                pool['total_acb_base']-=acb_relieved
+                realized.append({'tax_bucket':bucket,'symbol':sym,'sold_qty':str(sell_qty),'proceeds_base':str(round(proceeds,2)),'acb_relieved_base':str(round(acb_relieved,2)),'realized_gain_base':str(round(gain,2))})
+    summary=[]
+    for (bucket, sym), pool in sorted(pools.items()):
+        if pool['shares']==0 and not any(x['symbol']==sym and x['tax_bucket']==bucket for x in realized): continue
+        acb_unit=(pool['total_acb_base']/pool['shares']) if pool['shares']>0 else Decimal(0)
+        summary.append({'tax_bucket':bucket,'symbol':sym,'shares_held':str(pool['shares']),'pooled_acb_base':str(round(pool['total_acb_base'],2)),'acb_per_unit_base':str(round(acb_unit,4))})
+    return {'status':'ok','base_currency':base_cur,'acb_pools':summary,'realized_dispositions':realized,'limitations':['Educational pooled-ACB estimate from recorded trades; verify superficial-loss adjustments before tax filing.']}
+
+def discover_opportunities(universe_symbols=None, features_by_symbol=None, max_candidates=5):
+    """v0.6.0 A01: Two-stage deterministic opportunity screener (no daily whole-market LLM scan; returns no_compelling_opportunity when thresholds fail)."""
+    syms=[str(s).strip().upper() for s in (universe_symbols or market.universe(include_private=False)) if str(s).strip()]
+    feat_map={k.upper():v for k,v in (features_by_symbol or {}).items()}
+    scored=[]; excluded=[]
+    for sym in syms:
+        f=feat_map.get(sym)
+        if not f:
+            b=market.bars(sym, 60)
+            if len(b)<20:
+                excluded.append({'symbol':sym,'reason':'insufficient_fundamental_and_price_features'}); continue
+            px0=float(b[0]['close']); px1=float(b[-1]['close']); dd=(px1/max(px0,1e-6))-1.0
+            excluded.append({'symbol':sym,'reason':'price_only_without_fundamental_quality_features','return_60d':round(dd,4)}); continue
+        roic=float(f.get('roic') or 0.0); fcf_g=float(f.get('fcf_growth') or 0.0)
+        disc=float(f.get('valuation_discount_pct') or 0.0); dil=float(f.get('dilution_rate') or 0.0)
+        if roic<0.10 or fcf_g<0.0 or dil>0.05:
+            excluded.append({'symbol':sym,'reason':'failed_quality_or_dilution_floor','roic':roic,'fcf_growth':fcf_g,'dilution':dil}); continue
+        if disc<0.15:
+            excluded.append({'symbol':sym,'reason':'insufficient_margin_of_safety','valuation_discount_pct':disc}); continue
+        score=round(0.40*min(1.0, roic/0.25)+0.35*min(1.0, disc/0.40)+0.25*min(1.0, fcf_g/0.20), 4)
+        scored.append({'symbol':sym,'composite_score':score,'roic':roic,'fcf_growth':fcf_g,'valuation_discount_pct':disc,'dilution_rate':dil})
+    scored.sort(key=lambda r:r['composite_score'], reverse=True)
+    top=scored[:max(1, int(max_candidates))]
+    return {'status':'ok' if top else 'no_compelling_opportunity','screened_count':len(syms),'qualified_count':len(scored),'candidates':top,'excluded':excluded,'limitations':['Stage A deterministic screen only; candidates require Stage B primary evidence and Red-Team verification before any proposal.']}
+
+def daily_pnl_bridge(days=30):
+    """v0.7.0 Q03: Portfolio NAV change decomposition into market price P&L, external cashflows, dividends/interest, commissions, and residual."""
+    snap=finance.load_full_portfolio_snapshot()
+    if snap.status in {'unavailable','not_configured','missing_accounts','date_mismatch'}:
+        return {'status':snap.status}
+    perf=finance.performance()
+    intervals=perf.get('intervals') or []
+    if not intervals: return {'status':'insufficient_nav_history','as_of':snap.as_of}
+    win=intervals[-max(1,int(days)):]
+    ext_flows=sum((dec(r['external_flow']) for r in win), Decimal(0))
+    cutoff=(date.fromisoformat(snap.as_of)-timedelta(days=int(days))).isoformat()
+    divs=Decimal(0); comms=Decimal(0)
+    with db('finance') as c:
+        finance_schema(c)
+        for r in c.execute("SELECT category, payload FROM records WHERE category IN ('cash','trade')"):
+            f=json.loads(r['payload'])
+            raw_d=f.get('reportDate') or f.get('tradeDate') or f.get('dateTime') or ''
+            if not raw_d: continue
+            try: d_iso=day(raw_d)
+            except Exception: continue
+            if d_iso<=cutoff or d_iso>snap.as_of: continue
+            if r['category']=='cash':
+                kind=str(f.get('type') or '').lower()
+                if 'dividend' in kind or 'interest' in kind:
+                    divs+=dec(f.get('amountInBase') or f.get('amount') or 0)
+            elif r['category']=='trade':
+                comms+=abs(dec(f.get('ibCommission') or 0))
+    return {'status':'ok','window_days':int(days),'as_of':snap.as_of,'ending_nav_base':str(snap.nav),'external_flows_base':str(round(ext_flows,2)),'dividends_and_interest_base':str(round(divs,2)),'commissions_base':str(round(comms,2)),'limitations':['Residual market P&L and FX translation are inferred after subtracting external flows, income, and commissions.']}

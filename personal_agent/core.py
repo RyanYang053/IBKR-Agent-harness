@@ -67,3 +67,23 @@ def backup_databases(dest_dir=None):
         finally:
             dst.close(); src.close()
     return {'status':'ok','backup_dir':str(target_root),'databases':backed_up,'verified_at':now()}
+
+def restore_databases(backup_dir, dest_dir):
+    """Restore SQLite backup snapshot into dest_dir with PRAGMA integrity_check verification."""
+    b_root=Path(backup_dir); d_root=private_dir(Path(dest_dir))
+    restored=[]
+    for domain in ('finance','market','knowledge','ops'):
+        src_path=b_root/f'{domain}.sqlite3'
+        if not src_path.exists(): continue
+        dst_path=d_root/f'{domain}.sqlite3'
+        src=sqlite3.connect(src_path, timeout=15)
+        dst=sqlite3.connect(dst_path, timeout=15)
+        try:
+            src.backup(dst)
+            integrity=dst.execute('PRAGMA integrity_check').fetchone()[0]
+            if integrity!='ok': raise RuntimeError(f'restore integrity check failed for {domain}: {integrity}')
+            restored.append({'domain':domain,'bytes':dst_path.stat().st_size,'integrity':integrity})
+        finally:
+            dst.close(); src.close()
+    if not restored: raise ValueError(f'no SQLite backups found in {b_root}')
+    return {'status':'ok','restored_dir':str(d_root),'databases':restored,'verified_at':now()}

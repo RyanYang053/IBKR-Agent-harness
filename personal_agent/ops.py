@@ -52,6 +52,26 @@ def schema(c):
         details_json TEXT NOT NULL,
         created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS scheduled_jobs(
+        job_id TEXT PRIMARY KEY,
+        job_name TEXT NOT NULL,
+        schedule_window TEXT NOT NULL,
+        status TEXT NOT NULL,
+        summary_json TEXT NOT NULL,
+        ran_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS alerts(
+        dedup_key TEXT PRIMARY KEY,
+        symbol TEXT NOT NULL DEFAULT '',
+        severity TEXT NOT NULL,
+        title TEXT NOT NULL,
+        detail TEXT NOT NULL,
+        evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+        acknowledged INTEGER NOT NULL DEFAULT 0,
+        hit_count INTEGER NOT NULL DEFAULT 1,
+        first_seen_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL
+    );
     ''')
     wf_cols={r[1] for r in c.execute('PRAGMA table_info(workflow_runs)')}
     for col_def in ("immutable_params_json TEXT NOT NULL DEFAULT '{}'", "input_hash TEXT NOT NULL DEFAULT ''", "workflow_version TEXT NOT NULL DEFAULT '1'"):
@@ -193,9 +213,7 @@ def _param_hash(obj):
     return hashlib.sha256(json.dumps(obj or {}, sort_keys=True, default=str).encode('utf-8')).hexdigest()[:16]
 
 def _positions_hash():
-    snap=finance.portfolio()
-    pos=sorted((str(p.get('account','')),str(p.get('symbol','')),str(p.get('quantity','')),str(p.get('value_base',''))) for p in (snap.get('positions') or []))
-    return hashlib.sha256(json.dumps({'as_of':snap.get('as_of'),'nav':snap.get('nav'),'pos':pos}, sort_keys=True).encode('utf-8')).hexdigest()[:16]
+    return finance.load_full_portfolio_snapshot().snapshot_id
 
 def run_workflow(workflow_id, params=None, resume_run_id=None):
     """Execute a structured multi-stage investment workflow with immutable input binding, step-by-step durable SQLite checkpoints, and safe crash-resume."""
@@ -489,19 +507,22 @@ def approve_workflow(run_id, operator_note=''):
     state=get_workflow_run(run_id)
     if state.get('status')=='not_found': raise ValueError('workflow run not found')
     checkpoint=dict(state['checkpoint'])
-    rec_mid=None; rec_note=''
+    rec_mid=None; rec_note=''; need_repair=False
     with db('ops') as c:
         schema(c)
         intent=c.execute('SELECT * FROM approval_intents WHERE run_id=?',(str(run_id),)).fetchone()
         if intent:
             if intent['decision']=='approved':
-                return {'run_id':run_id,'status':'completed','idempotent':True,'committed_memory_id':intent['memory_id'],'orders':'disabled'}
-            if intent['decision']=='rejected':
+                if state['status']!='completed':
+                    rec_mid=intent['memory_id']; rec_note=intent['operator_note']; need_repair=True
+                else:
+                    return {'run_id':run_id,'status':'completed','idempotent':True,'committed_memory_id':intent['memory_id'],'orders':'disabled'}
+            elif intent['decision']=='rejected':
                 raise ValueError('workflow run already rejected')
-            if intent['decision']=='approving' and intent['memory_id'] is not None:
-                rec_mid=intent['memory_id']; rec_note=intent['operator_note']
+            elif intent['decision']=='approving' and intent['memory_id'] is not None:
+                rec_mid=intent['memory_id']; rec_note=intent['operator_note']; need_repair=True
                 c.execute("UPDATE approval_intents SET decision='approved', updated_at=? WHERE run_id=?",(now(), str(run_id)))
-    if rec_mid is not None:
+    if need_repair and rec_mid is not None:
         done=list(state['completed_steps'])
         for s_name in ('human_approved','committed_to_memory'):
             if s_name not in done: done.append(s_name)
@@ -548,34 +569,37 @@ def approve_workflow(run_id, operator_note=''):
             except ValueError as ve:
                 if 'shifted >5%' in str(ve): raise
 
-    # Atomic intent claim via approval_intents + workflow_runs
+    # Atomic CAS intent claim via approval_intents + workflow_runs
     stamp=now()
     with db('ops') as c:
         schema(c)
+        cur=c.execute("UPDATE workflow_runs SET status='approving', updated_at=? WHERE run_id=? AND status='awaiting_approval'",(stamp, str(run_id)))
+        if cur.rowcount==0:
+            intent=c.execute('SELECT * FROM approval_intents WHERE run_id=?',(str(run_id),)).fetchone()
+            if intent and intent['decision']=='approved':
+                return {'run_id':run_id,'status':'completed','idempotent':True,'committed_memory_id':intent['memory_id'],'orders':'disabled'}
+            raise ValueError('workflow run already claimed or no longer awaiting approval')
         c.execute("INSERT OR IGNORE INTO approval_intents(run_id,decision,operator_note,memory_id,created_at,updated_at) VALUES(?,?,?,?,?,?)",(str(run_id),'approving',operator_note,None,stamp,stamp))
-        intent=c.execute('SELECT * FROM approval_intents WHERE run_id=?',(str(run_id),)).fetchone()
-        if intent['decision']=='approved':
-            return {'run_id':run_id,'status':'completed','idempotent':True,'committed_memory_id':intent['memory_id'],'orders':'disabled'}
-        if intent['decision']=='rejected':
-            raise ValueError('workflow run already rejected')
-        c.execute("UPDATE workflow_runs SET status='approving', updated_at=? WHERE run_id=? AND status='awaiting_approval'",(stamp, str(run_id)))
 
     memory_id=None
     try:
         if prop['kind']=='save_journal':
-            memory_id=knowledge.save_journal(prop['symbol'], prop['thesis'], 'workflow_human_approved', alternatives=operator_note, risk=prop.get('falsifier') or '', confidence=prop.get('confidence') or '')
+            memory_id=knowledge.save_journal(prop['symbol'], prop['thesis'], 'workflow_human_approved', alternatives=operator_note, risk=prop.get('falsifier') or '', confidence=prop.get('confidence') or '', approval_run_id=str(run_id))
         elif prop['kind']=='approved_trade_plan':
             plan_thesis=f"[{prop['action']} {prop['amount_base']} base in {prop['account']} | gate={prop['gate_verdict']}] {prop['thesis']}"
             if operator_note: plan_thesis+=' | Note: '+operator_note
-            memory_id=knowledge.save_journal(prop['symbol'], plan_thesis, 'workflow_human_approved', risk=prop.get('falsifier') or '', confidence=prop.get('confidence') or '')
+            memory_id=knowledge.save_journal(prop['symbol'], plan_thesis, 'workflow_human_approved', risk=prop.get('falsifier') or '', confidence=prop.get('confidence') or '', approval_run_id=str(run_id))
         elif prop['kind']=='save_lesson':
             detail=prop['detail']+(' | Operator note: '+operator_note if operator_note else '')
-            memory_id=knowledge.save_lesson(prop['lesson_kind'], prop['title'], detail, 'workflow_human_approved', symbol=prop.get('symbol') or '', action_rule=prop.get('action_rule') or '')
+            memory_id=knowledge.save_lesson(prop['lesson_kind'], prop['title'], detail, 'workflow_human_approved', symbol=prop.get('symbol') or '', action_rule=prop.get('action_rule') or '', approval_run_id=str(run_id))
+        else:
+            raise ValueError(f"unsupported proposed_action kind: {prop.get('kind')}")
         with db('ops') as c:
             c.execute("UPDATE approval_intents SET memory_id=?, decision='approved', updated_at=? WHERE run_id=?",(memory_id, now(), str(run_id)))
     except Exception:
         with db('ops') as c:
             c.execute("UPDATE workflow_runs SET status='awaiting_approval', updated_at=? WHERE run_id=? AND status='approving'",(now(), str(run_id)))
+            c.execute("DELETE FROM approval_intents WHERE run_id=? AND decision='approving' AND memory_id IS NULL",(str(run_id),))
         raise
     done=list(state['completed_steps'])+['human_approved','committed_to_memory']
     checkpoint['approval_resolution']={'decision':'approved','memory_id':memory_id,'operator_note':operator_note,'resolved_at':now(),'orders':'disabled'}
@@ -583,21 +607,19 @@ def approve_workflow(run_id, operator_note=''):
     return {'run_id':run_id,'status':'completed','committed_memory_id':memory_id,'orders':'disabled'}
 
 def reject_workflow(run_id, reason='rejected_by_operator'):
-    """Human-in-the-Loop Rejection: atomically claims approval_intent without modifying memory or ledger."""
+    """Human-in-the-Loop Rejection: atomically claims workflow_runs + approval_intents without modifying memory or ledger."""
     state=get_workflow_run(run_id)
     if state.get('status')=='not_found': raise ValueError('workflow run not found')
     stamp=now()
     with db('ops') as c:
         schema(c)
-        cur=c.execute("INSERT OR IGNORE INTO approval_intents(run_id,decision,operator_note,memory_id,created_at,updated_at) VALUES(?,?,?,?,?,?)",(str(run_id),'rejected',reason,None,stamp,stamp))
+        cur=c.execute("UPDATE workflow_runs SET status='rejected', current_step='human_rejected', pending_approval=0, updated_at=? WHERE run_id=? AND status='awaiting_approval'",(stamp, str(run_id)))
         if cur.rowcount==0:
-            intent=c.execute('SELECT decision FROM approval_intents WHERE run_id=?',(str(run_id),)).fetchone()
-            if intent and intent['decision']!='rejected':
-                raise ValueError(f"cannot reject workflow run with existing approval intent={intent['decision']}")
-    if state['status']!='awaiting_approval': raise ValueError('workflow run is not awaiting approval')
+            raise ValueError('workflow run is not awaiting approval or already claimed')
+        c.execute("INSERT OR IGNORE INTO approval_intents(run_id,decision,operator_note,memory_id,created_at,updated_at) VALUES(?,?,?,?,?,?)",(str(run_id),'rejected',reason,None,stamp,stamp))
     done=list(state['completed_steps'])+['human_rejected']
     checkpoint=dict(state['checkpoint'])
-    checkpoint['approval_resolution']={'decision':'rejected','reason':reason,'resolved_at':now()}
+    checkpoint['approval_resolution']={'decision':'rejected','reason':reason,'resolved_at':stamp}
     _save_run(run_id, state['workflow_id'], 'rejected', 'human_rejected', done, False, state['inputs_meta'], checkpoint, state.get('proposed_action'), False)
     return {'run_id':run_id,'status':'rejected','reason':reason}
 
@@ -696,3 +718,62 @@ def list_eval_runs(limit=10):
     for r in rows:
         d=dict(r); d['cases']=json.loads(d.pop('details_json')); out.append(d)
     return out
+
+def record_scheduled_job(job_name, schedule_window, status, summary=None):
+    """v0.6.0 A03: Persist scheduled job execution state for Task Scheduler / CLI."""
+    jid=f'{job_name}:{schedule_window}'
+    with db('ops') as c:
+        schema(c)
+        c.execute('INSERT OR REPLACE INTO scheduled_jobs VALUES(?,?,?,?,?,?)',(jid,str(job_name),str(schedule_window),str(status),json.dumps(summary or {},ensure_ascii=False,default=str),now()))
+    return {'job_id':jid,'status':status}
+
+def emit_alert(dedup_key, symbol, severity, title, detail, evidence_ids=None):
+    """v0.6.0 A03: Deduplicated local alert emission with hit_count tracking."""
+    stamp=now(); key=str(dedup_key).strip()
+    if not key or not title: raise ValueError('dedup_key and title required')
+    with db('ops') as c:
+        schema(c)
+        old=c.execute('SELECT hit_count FROM alerts WHERE dedup_key=?',(key,)).fetchone()
+        if old:
+            c.execute('UPDATE alerts SET hit_count=hit_count+1, last_seen_at=? WHERE dedup_key=?',(stamp,key))
+            return {'dedup_key':key,'deduplicated':True,'hit_count':old['hit_count']+1}
+        c.execute('INSERT INTO alerts VALUES(?,?,?,?,?,?,?,?,?,?)',(key,str(symbol or '').upper(),str(severity),str(title),str(detail),json.dumps(evidence_ids or []),0,1,stamp,stamp))
+    return {'dedup_key':key,'deduplicated':False,'hit_count':1}
+
+def list_alerts(include_ack=False, limit=30):
+    with db('ops') as c:
+        schema(c)
+        q='SELECT * FROM alerts'+('' if include_ack else ' WHERE acknowledged=0')+' ORDER BY last_seen_at DESC LIMIT ?'
+        rows=[dict(r) for r in c.execute(q,(bounded(limit),))]
+    for r in rows: r['evidence_ids']=json.loads(r.pop('evidence_ids_json'))
+    return rows
+
+def acknowledge_alert(dedup_key):
+    with db('ops') as c:
+        schema(c)
+        cur=c.execute('UPDATE alerts SET acknowledged=1 WHERE dedup_key=?',(str(dedup_key),))
+    return {'dedup_key':dedup_key,'acknowledged':cur.rowcount>0}
+
+def shadow_mode_check():
+    """v1.0 P02: End-of-day operational readiness & shadow-mode verification across Flex, Broker, Policy, Backups, and Evals."""
+    from . import broker
+    snap=finance.load_full_portfolio_snapshot()
+    rec=broker.reconcile_live_to_flex()
+    pol=quant.evaluate_policy(snap, mode='AUDIT')
+    ev_runs=list_eval_runs(1)
+    with db('ops') as c:
+        schema(c)
+        pending=c.execute("SELECT count(*) FROM workflow_runs WHERE status='awaiting_approval'").fetchone()[0]
+        stuck=c.execute("SELECT count(*) FROM workflow_runs WHERE status='approving'").fetchone()[0]
+    return {
+        'status':'ok' if snap.status in {'ok','partial_or_stale'} and stuck==0 else 'attention_required',
+        'flex_status':snap.status,
+        'flex_snapshot_id':snap.snapshot_id,
+        'broker_reconciliation_status':rec.get('status'),
+        'policy_audit_status':pol.get('status'),
+        'pending_approvals':pending,
+        'stuck_approving_runs':stuck,
+        'latest_eval_score_pct':ev_runs[0]['score_pct'] if ev_runs else None,
+        'orders':'disabled',
+        'limitations':['20-day live shadow-mode window and real IBKR TWS socket permissions must be validated on the operator host.']
+    }

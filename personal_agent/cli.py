@@ -1,5 +1,5 @@
 import argparse,json,sys
-from . import core,decision,finance,knowledge,market,ops,quant,report
+from . import broker,core,decision,finance,knowledge,market,ops,quant,report
 from .core import config
 
 def main():
@@ -24,6 +24,13 @@ def main():
     at=s.add_parser('attribution'); at.add_argument('--days',type=int,default=90); at.add_argument('--account',default='')
     fd=s.add_parser('filing-delta'); fd.add_argument('symbol'); fd.add_argument('--sync',action='store_true')
     s.add_parser('health')
+    s.add_parser('broker-status')
+    s.add_parser('broker-reconcile')
+    s.add_parser('discover')
+    acb_p=s.add_parser('acb'); acb_p.add_argument('--symbol',default=''); acb_p.add_argument('--account',default='')
+    pit_p=s.add_parser('pit-facts'); pit_p.add_argument('symbol'); pit_p.add_argument('--as-of',default='')
+    s.add_parser('alerts')
+    s.add_parser('shadow-check')
     bk=s.add_parser('backup'); bk.add_argument('--dest',default='')
     s.add_parser('telemetry')
     s.add_parser('eval')
@@ -68,6 +75,13 @@ def main():
                 market.sync_filings(a.symbol); market.sync_filing_sections(a.symbol)
             result=decision.filing_red_flag_audit(a.symbol, include_private=True)
         elif a.command=='health': result=market.system_health()
+        elif a.command=='broker-status': result=broker.latest_broker_snapshot()
+        elif a.command=='broker-reconcile': result=broker.reconcile_live_to_flex()
+        elif a.command=='discover': result=decision.discover_opportunities()
+        elif a.command=='acb': result=decision.compute_canadian_acb(a.symbol or None, a.account or None)
+        elif a.command=='pit-facts': result=market.get_facts_pit(a.symbol, as_of=a.as_of)
+        elif a.command=='alerts': result=ops.list_alerts()
+        elif a.command=='shadow-check': result=ops.shadow_mode_check()
         elif a.command=='backup': result=core.backup_databases(a.dest or None)
         elif a.command=='telemetry': result=ops.telemetry_summary()
         elif a.command=='eval': result=ops.run_eval_benchmark()

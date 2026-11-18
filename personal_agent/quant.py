@@ -6,7 +6,7 @@ import json, math
 from pathlib import Path
 import numpy as np
 from .core import ROOT, bounded, db, now
-from .finance import AccountRecord, PortfolioSnapshot, PositionRecord, canonical_snapshot, dec, performance, portfolio
+from .finance import AccountRecord, PortfolioSnapshot, PositionRecord, canonical_snapshot, dec, load_full_portfolio_snapshot, performance, portfolio
 from . import decision, market
 
 def _quant_schema(c):
@@ -123,21 +123,22 @@ def policy_hash(pol=None):
     data=pol if pol is not None else load_policy()
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode('utf-8')).hexdigest()[:16]
 
-def evaluate_policy(portfolio_snapshot=None, proposed_trade=None, market_snapshot=None, investment_policy=None, account=None):
-    """Single canonical IPS Policy Engine using immutable per-account, per-contract PortfolioSnapshot (never tax-aggregated)."""
+def evaluate_policy(portfolio_snapshot=None, proposed_trade=None, market_snapshot=None, investment_policy=None, account=None, mode='PROPOSED_PLAN', risk_context=None):
+    """Pure canonical IPS Policy Engine (mode='AUDIT'|'PROPOSED_PLAN') over immutable per-account, per-contract PortfolioSnapshot."""
     pol=investment_policy or load_policy()
-    raw_snap=portfolio_snapshot if portfolio_snapshot is not None else portfolio()
-    if isinstance(raw_snap, dict) and 'nav' not in raw_snap:
-        return {'status':'blocked','reason':raw_snap.get('status','unavailable'),'hard_blocks':[{'rule':'ledger_unavailable','detail':raw_snap.get('status','unavailable')}],'breaches':[],'risk_coverage_complete':False}
-    # Use raw per-account positions when available; fall back to tax_positions only if a dict snapshot omitted positions
-    fallback_pos=None
-    if isinstance(raw_snap, dict) and raw_snap.get('positions') is None:
-        fallback_pos=(decision.tax_positions(account=account).get('positions') or [])
-    csnap=canonical_snapshot(raw_snap, tax_positions_fallback=fallback_pos)
-    if csnap.status in {'unavailable','date_mismatch','unmatched_transfers'} or csnap.nav<=0:
+    if portfolio_snapshot is None:
+        csnap=load_full_portfolio_snapshot()
+    elif isinstance(portfolio_snapshot, dict) and 'nav' not in portfolio_snapshot:
+        return {'status':'blocked','reason':portfolio_snapshot.get('status','unavailable'),'hard_blocks':[{'rule':'ledger_unavailable','detail':portfolio_snapshot.get('status','unavailable')}],'breaches':[],'risk_coverage_complete':False}
+    else:
+        fallback_pos=None
+        if isinstance(portfolio_snapshot, dict) and portfolio_snapshot.get('positions') is None:
+            fallback_pos=(decision.tax_positions(account=account).get('positions') or [])
+        csnap=canonical_snapshot(portfolio_snapshot, tax_positions_fallback=fallback_pos)
+    if csnap.status in {'unavailable','date_mismatch','unmatched_transfers','truncated_snapshot','missing_accounts','not_configured'} or csnap.nav<=0:
         return {'status':'invalid_nav' if csnap.nav<=0 else csnap.status,'hard_blocks':[{'rule':'ledger_unavailable','detail':csnap.status}],'breaches':[],'risk_coverage_complete':False}
-    perf=performance()
-    r_base=decision.risk()
+    perf=risk_context if (risk_context and 'twr' in risk_context) else performance()
+    r_base=risk_context if (risk_context and 'max_drawdown' in risk_context) else decision.risk()
     acct_rows=[a for a in csnap.accounts if not account or a.account==account]
     nav=float(sum((a.nav for a in acct_rows), Decimal(0))) if acct_rows else float(csnap.nav)
     cash=float(sum((a.cash for a in acct_rows if a.cash is not None), Decimal(0))) if acct_rows else float(csnap.cash)
@@ -254,11 +255,11 @@ def evaluate_policy(portfolio_snapshot=None, proposed_trade=None, market_snapsho
     if abs(net_econ_eq)>max_net_lev:
         b_lev={'rule':'max_economic_leverage','actual':round(net_econ_eq,4),'limit':max_net_lev}
         breaches.append(b_lev)
-        if proposed_trade: hard_blocks.append(b_lev)
+        if mode=='PROPOSED_PLAN' or proposed_trade: hard_blocks.append(b_lev)
     if gross_econ_eq>max_gross_lev:
         b_glev={'rule':'max_gross_economic_leverage','actual':round(gross_econ_eq,4),'limit':max_gross_lev}
         breaches.append(b_glev)
-        if proposed_trade: hard_blocks.append(b_glev)
+        if mode=='PROPOSED_PLAN' or proposed_trade: hard_blocks.append(b_glev)
     if core_wt<core_min:
         breaches.append({'rule':'core_allocation_below_target','actual':round(core_wt,4),'target_min':core_min})
     if tac_wt>tactical_max:
@@ -591,61 +592,84 @@ def evaluate_expectation_gap(symbol, period=''):
     snap_merged={**pre,**merged_act,'history_entries':len(rows)}
     return {'symbol':sym,'period':per,'basis':pre['basis'],'verdict':verdict,'revenue_surprise_pct':round(rev_surp,4) if rev_surp is not None else None,'eps_surprise_pct':round(eps_surp,4) if eps_surp is not None else None,'guidance_growth_delta':round(guide_diff,4) if guide_diff is not None else None,'snapshot':snap_merged}
 
-def simulate_allocation(portfolio_snapshot, cash_contribution=0.0, proposed_trades=None):
-    """Return a new immutable PortfolioSnapshot reflecting a cash contribution and a list of proposed trades."""
+def simulate_allocation(portfolio_snapshot, cash_contribution=0.0, proposed_trades=None, contribution_account=None):
+    """Deterministic transaction reducer conserving account cash, signed quantities, and NAV across multi-asset trades."""
     csnap=canonical_snapshot(portfolio_snapshot)
     contrib=dec(cash_contribution or 0)
-    accts=list(csnap.accounts)
+    accts=[AccountRecord(account=a.account,tax_bucket=a.tax_bucket,nav=a.nav,cash=a.cash if a.cash is not None else Decimal(0),allow_margin=a.allow_margin,source=a.source) for a in csnap.accounts]
     pos_list=list(csnap.positions)
     if contrib!=0 and accts:
-        # Credit contribution to first taxable/margin account (or first account)
-        idx=next((i for i,a in enumerate(accts) if a.allow_margin), 0)
+        if contribution_account:
+            idx=next((i for i,a in enumerate(accts) if a.account==contribution_account), None)
+            if idx is None: raise ValueError(f'unknown contribution_account: {contribution_account}')
+        else:
+            idx=next((i for i,a in enumerate(accts) if a.allow_margin), 0)
         a0=accts[idx]
         accts[idx]=AccountRecord(account=a0.account, tax_bucket=a0.tax_bucket, nav=a0.nav+contrib, cash=(a0.cash or Decimal(0))+contrib, allow_margin=a0.allow_margin, source=a0.source)
     for tr in (proposed_trades or []):
         sym=str(tr.get('symbol') or '').strip().upper()
-        act=str(tr.get('action') or 'BUY').strip().upper()
+        cid=str(tr.get('conid') or '').strip()
+        act=str(tr.get('action') or tr.get('side') or 'BUY').strip().upper()
         amt=abs(dec(tr.get('amount_base') or 0))
-        acct_t=str(tr.get('account') or '').strip()
+        fee=abs(dec(tr.get('estimated_fees_base') or 0))
+        acct_t=str(tr.get('account') or tr.get('account_id') or '').strip()
         if not sym or amt<=0: continue
-        delta_v=amt if act in {'BUY','ADD'} else -amt
+        delta_v=amt if act in {'BUY','ADD','COVER'} else -amt
         if acct_t:
-            for i, a in enumerate(accts):
-                if a.account==acct_t:
-                    accts[i]=AccountRecord(account=a.account, tax_bucket=a.tax_bucket, nav=a.nav, cash=(a.cash or Decimal(0))-delta_v, allow_margin=a.allow_margin, source=a.source)
-                    break
+            a_idx=next((i for i,a in enumerate(accts) if a.account==acct_t), None)
+            if a_idx is None: raise ValueError(f'unknown trade account: {acct_t}')
         elif accts:
-            a0=accts[0]
-            accts[0]=AccountRecord(account=a0.account, tax_bucket=a0.tax_bucket, nav=a0.nav, cash=(a0.cash or Decimal(0))-delta_v, allow_margin=a0.allow_margin, source=a0.source)
-        p_idx=next((i for i,p in enumerate(pos_list) if p.symbol==sym and (not acct_t or p.account==acct_t)), None)
+            a_idx=0; acct_t=accts[0].account
+        else:
+            raise ValueError('no accounts available for trade simulation')
+        a_cur=accts[a_idx]
+        new_cash=(a_cur.cash or Decimal(0))-delta_v-fee
+        accts[a_idx]=AccountRecord(account=a_cur.account, tax_bucket=a_cur.tax_bucket, nav=a_cur.nav-fee, cash=new_cash, allow_margin=a_cur.allow_margin, source=a_cur.source)
+        p_idx=next((i for i,p in enumerate(pos_list) if ((cid and p.conid==cid) or p.symbol==sym) and p.account==acct_t), None)
         if p_idx is not None:
             p0=pos_list[p_idx]
-            pos_list[p_idx]=PositionRecord(account=p0.account, conid=p0.conid, symbol=p0.symbol, asset=p0.asset, currency=p0.currency, quantity=p0.quantity, multiplier=p0.multiplier, market_value_base=max(Decimal(0), p0.market_value_base+delta_v), underlying_price=p0.underlying_price, underlying_currency=p0.underlying_currency, fx_rate_to_base=p0.fx_rate_to_base, delta=p0.delta, source=p0.source)
-        elif delta_v>0:
-            pos_list.append(PositionRecord(account=acct_t or (accts[0].account if accts else ''), conid=sym, symbol=sym, asset=str(tr.get('asset') or 'STK').upper(), currency=csnap.currency, quantity=Decimal(0), multiplier=Decimal(1), market_value_base=delta_v))
+            new_mv=p0.market_value_base+delta_v
+            if p0.market_value_base>0 and new_mv<0:
+                raise ValueError(f'oversell rejected for {sym} in {acct_t}')
+            new_qty=p0.quantity
+            if p0.market_value_base!=0 and p0.quantity!=0:
+                new_qty=p0.quantity*(new_mv/p0.market_value_base)
+            pos_list[p_idx]=PositionRecord(account=p0.account, conid=p0.conid, symbol=p0.symbol, asset=p0.asset, currency=p0.currency, quantity=new_qty, multiplier=p0.multiplier, market_value_base=new_mv, underlying_price=p0.underlying_price, underlying_currency=p0.underlying_currency, fx_rate_to_base=p0.fx_rate_to_base, delta=p0.delta, source=p0.source)
+        else:
+            if delta_v<0: raise ValueError(f'cannot sell unheld {sym} in {acct_t}')
+            pos_list.append(PositionRecord(account=acct_t, conid=cid or sym, symbol=sym, asset=str(tr.get('asset') or 'STK').upper(), currency=csnap.currency, quantity=Decimal(0), multiplier=Decimal(1), market_value_base=delta_v))
+    tot_nav=sum((a.nav for a in accts), Decimal(0))
+    tot_cash=sum((a.cash or Decimal(0) for a in accts), Decimal(0))
+    sim_hash=hashlib.sha256(json.dumps({'base':csnap.snapshot_id,'contrib':str(contrib),'acct':contribution_account,'trades':proposed_trades or []}, sort_keys=True, default=str).encode('utf-8')).hexdigest()[:16]
     return PortfolioSnapshot(
-        snapshot_id=f'{csnap.snapshot_id}_sim',
+        snapshot_id=sim_hash,
         as_of=csnap.as_of, status=csnap.status, stale=csnap.stale,
         advice_allowed=csnap.advice_allowed, positions_complete=csnap.positions_complete,
-        currency=csnap.currency, nav=csnap.nav+contrib, cash=csnap.cash+contrib,
+        currency=csnap.currency, nav=tot_nav, cash=tot_cash,
         accounts=tuple(accts), positions=tuple(pos_list), limitations=csnap.limitations
     )
 
-def allocate_incremental_capital(amount_base, candidates=None, expected_returns=None, account_constraints=None):
-    """Full-Portfolio Covariance-aware Multi-Asset Robust Optimizer + Opportunity Cost comparator under IPS limits, PSD covariance, Quarter-Kelly, and Canadian account location."""
+def allocate_incremental_capital(amount_base, candidates=None, expected_returns=None, account_constraints=None, contribution_account=None):
+    """Full-Portfolio Covariance-aware Multi-Asset Robust Optimizer over canonical PortfolioSnapshot with post-trade IPS plan gate."""
     add_amt=float(dec(amount_base))
     if add_amt<=0: raise ValueError('amount_base must be positive')
     pol=load_policy()
-    snap=portfolio()
-    if 'nav' not in snap: return {'status':'blocked','reason':snap.get('status','unavailable')}
-    if not snap.get('advice_allowed'):
+    from . import finance as _fin
+    csnap=load_full_portfolio_snapshot() if portfolio is _fin.portfolio else canonical_snapshot(portfolio())
+    if csnap.status in {'unavailable','date_mismatch','unmatched_transfers','truncated_snapshot','missing_accounts','not_configured'} or csnap.nav<=0:
+        return {'status':'blocked','reason':csnap.status}
+    if not csnap.advice_allowed:
         return {'status':'blocked_stale_ledger','reason':'Ledger snapshot is stale or incomplete; sync Flex before optimizing allocation.'}
-    nav=float(dec(snap['nav'])); new_nav=nav+add_amt
+    nav=float(csnap.nav); new_nav=nav+add_amt
+    pos_vals_by_sym={}
+    for p in csnap.positions:
+        pos_vals_by_sym[p.symbol]=pos_vals_by_sym.get(p.symbol, 0.0)+float(p.market_value_base)
     tax=decision.tax_positions()
-    pos_map={p['symbol'].upper():p for p in (tax.get('positions') or [])}
-    cand_list=[str(s).strip().upper() for s in (candidates or list(pos_map.keys())[:4]+['QQQ']) if str(s).strip()]
+    tax_map={p['symbol'].upper():p for p in (tax.get('positions') or [])}
+    cand_list=[str(s).strip().upper() for s in (candidates or list(pos_vals_by_sym.keys())[:4]+['QQQ']) if str(s).strip()]
     cand_list=list(dict.fromkeys(cand_list))[:8]
-    all_syms=list(cand_list)+[s for s in pos_map if s not in cand_list and (pos_map[s].get('asset') or 'STK').upper()=='STK']
+    all_syms=list(cand_list)+[p.symbol for p in csnap.positions if p.symbol not in cand_list and p.asset=='STK']
+    all_syms=list(dict.fromkeys(all_syms))
     exp_map={k.upper():float(v) for k,v in (expected_returns or {}).items()}
     rf=0.04
     m_pt=market.macro('DGS3MO')
@@ -663,7 +687,7 @@ def allocate_incremental_capital(amount_base, candidates=None, expected_returns=
     kappa=float(pol.get('robust_uncertainty_penalty', 0.50))
     lam=float(pol.get('risk_aversion_lambda', 3.0))
     min_cash=float(pol.get('min_cash_reserve', 0.05))
-    cash_cur=float(sum((dec(a['cash']) for a in snap.get('accounts',[]) if a.get('cash') not in (None,'')), Decimal(0)))
+    cash_cur=float(csnap.cash)
 
     # Build full-portfolio covariance matrix & CAPM/ERP priors across candidates + all existing holdings
     ret_series={sym:decision._bar_returns(sym, 120) for sym in all_syms}
@@ -708,7 +732,7 @@ def allocate_incremental_capital(amount_base, candidates=None, expected_returns=
         cov_all=cov_raw
 
     # Optimize incremental allocation weights delta_w over candidates (in full-portfolio space)
-    cur_vals_all=np.array([float(dec(pos_map[s]['total_value_base'])) if s in pos_map else 0.0 for s in all_syms], dtype=float)
+    cur_vals_all=np.array([pos_vals_by_sym.get(s, 0.0) for s in all_syms], dtype=float)
     w_cur_all=cur_vals_all/new_nav
     add_share=add_amt/new_nav
     kelly_caps={s:max(0.0, min(max_single if s not in core_set else (1.0-min_cash), k_frac*(mus[s]-rf)/max(0.01, vols[s]**2))) for s in cand_list}
@@ -754,8 +778,8 @@ def allocate_incremental_capital(amount_base, candidates=None, expected_returns=
     w_opt_post_all[:m_cand]+=(x*add_share)
     port_vol_post=float(math.sqrt(max(0.0, float(w_opt_post_all.T@cov_all@w_opt_post_all)))) if m_all>0 else 0.0
     port_ret_post=float(np.dot(w_opt_post_all, np.array([mus[s] for s in all_syms])))+(max(0.0, (cash_cur+hold_cash_amt)/new_nav))*rf
-    post_snapshot=simulate_allocation(snap, cash_contribution=add_amt, proposed_trades=[{'symbol':a['symbol'],'action':'BUY','amount_base':str(a['amount_base'])} for a in opt_alloc])
-    pol_check=evaluate_policy(portfolio_snapshot=post_snapshot, investment_policy=pol)
+    post_snapshot=simulate_allocation(csnap, cash_contribution=add_amt, proposed_trades=[{'symbol':a['symbol'],'action':'BUY','amount_base':str(a['amount_base']),'account':contribution_account or ''} for a in opt_alloc], contribution_account=contribution_account)
+    pol_check=evaluate_policy(portfolio_snapshot=post_snapshot, investment_policy=pol, mode='PROPOSED_PLAN')
     overall_status='blocked_policy_violation' if pol_check.get('hard_blocks') else 'ok'
 
     comparisons=[]
@@ -765,8 +789,8 @@ def allocate_incremental_capital(amount_base, candidates=None, expected_returns=
         ann_vol=vols[sym]; mu=mus[sym]
         kelly_cap=kelly_caps[sym]
         has_us_div=False
-        if sym in pos_map:
-            has_us_div=any(dec(l.get('withholding_tax_local') or '0')!=0 for l in (pos_map[sym].get('lots') or []))
+        if sym in tax_map:
+            has_us_div=any(dec(l.get('withholding_tax_local') or '0')!=0 for l in (tax_map[sym].get('lots') or []))
         best_acct='taxable' if has_us_div else ('tfsa' if mu>=0.12 and lev_map.get(sym,1.0)<=1.0 else 'taxable')
         policy_ok=(sym in core_set) or (post_w<=max_single)
         mctr_post=float((cov_all@w_opt_post_all)[i]/max(1e-6, port_vol_post)) if port_vol_post>0 else ann_vol
@@ -789,8 +813,10 @@ def allocate_incremental_capital(amount_base, candidates=None, expected_returns=
     comparisons.append({'candidate':'HOLD_CASH','bucket':'liquidity_reserve','current_weight':round(cash_cur/nav,4),'post_allocation_weight':round((cash_cur+add_amt)/new_nav,4),'annualized_vol_90d':0.0,'assumed_expected_return':round(rf,4),'expected_return_source':'macro_rf','quarter_kelly_target_weight':min_cash,'within_policy_cap':True,'recommended_account_location':'taxable_or_tfsa','location_rationale':'Dry powder for drawdown tranches and policy liquidity floor'})
     return {
         'status':overall_status,
+        'snapshot_id':csnap.snapshot_id,
+        'post_snapshot_id':post_snapshot.snapshot_id,
         'incremental_capital_base':round(add_amt,2),
-        'currency':snap['currency'],
+        'currency':csnap.currency,
         'risk_free_rate_used':round(rf,4),
         'equity_risk_premium_used':round(erp,4),
         'optimal_multi_asset_allocation':{
@@ -959,3 +985,148 @@ def backtest_strategies(symbol='QQQ', initial_capital='10000', cost_bps='5', fin
         'out_of_sample_split':oos,
         'limitations':['Uses split- and dividend-adjusted cached bars where available; signals on close[t-1] execute at open[t]. Realized capital-gains taxes are excluded.']
     }
+
+def etf_lookthrough_exposure(etf_constituents=None, portfolio_snapshot=None):
+    """v0.4.1 R01: Decompose ETF holdings into underlying constituent exposures without double-counting direct + ETF holdings."""
+    csnap=canonical_snapshot(portfolio_snapshot) if portfolio_snapshot is not None else load_full_portfolio_snapshot()
+    if csnap.nav<=0: return {'status':'invalid_nav','exposures':{}}
+    nav=float(csnap.nav)
+    const_map={k.upper():{ck.upper():float(cv) for ck,cv in v.items()} for k,v in (etf_constituents or {}).items()}
+    direct={}; indirect={}; unallocated={}
+    for p in csnap.positions:
+        if p.asset!='STK': continue
+        w=float(p.market_value_base)/nav
+        if p.symbol in const_map:
+            covered=0.0
+            for c_sym, c_wt in const_map[p.symbol].items():
+                indirect[c_sym]=indirect.get(c_sym, 0.0)+w*c_wt
+                covered+=c_wt
+            if covered<0.999:
+                unallocated[p.symbol]=unallocated.get(p.symbol, 0.0)+w*(1.0-covered)
+        else:
+            direct[p.symbol]=direct.get(p.symbol, 0.0)+w
+    all_syms=sorted(set(direct.keys()) | set(indirect.keys()))
+    combined=[{'symbol':s,'direct_weight':round(direct.get(s,0.0),4),'etf_lookthrough_weight':round(indirect.get(s,0.0),4),'total_lookthrough_weight':round(direct.get(s,0.0)+indirect.get(s,0.0),4)} for s in all_syms]
+    combined.sort(key=lambda r:abs(r['total_lookthrough_weight']), reverse=True)
+    return {'status':'ok','snapshot_id':csnap.snapshot_id,'lookthrough_exposures':combined,'unallocated_etf_weights':{k:round(v,4) for k,v in unallocated.items()}}
+
+def analyze_option_chain(symbol, chain_rows, spot, risk_free_rate='0.04', min_oi=10, max_spread_pct=0.25):
+    """v0.4.1 R03: Filter option chain for missing/crossed/stale/illiquid quotes and compute conservative bid/ask entry pricing."""
+    s=float(spot); r=float(risk_free_rate)
+    if s<=0: raise ValueError('positive spot required')
+    eligible=[]; rejected=[]
+    for row in (chain_rows or []):
+        bid=row.get('bid'); ask=row.get('ask'); oi=int(row.get('open_interest') or 0)
+        strike=float(row.get('strike') or 0); dte=int(row.get('days_to_expiry') or 0)
+        right=str(row.get('right') or 'call').lower()
+        if bid is None or ask is None or bid<=0 or ask<=0 or bid>ask or strike<=0 or dte<1:
+            rejected.append({**row,'reject_reason':'missing_or_crossed_quote'}); continue
+        mid=0.5*(float(bid)+float(ask))
+        spread_pct=(float(ask)-float(bid))/mid if mid>0 else 1.0
+        if oi<min_oi or spread_pct>max_spread_pct:
+            rejected.append({**row,'reject_reason':'illiquid_or_wide_spread','spread_pct':round(spread_pct,4)}); continue
+        strat='covered_call' if right=='call' else 'long_put'
+        iv_ask=analyze_option_strategy(strat, s, strike, dte, premium=str(ask), risk_free_rate=str(r))
+        eligible.append({
+            'symbol':str(symbol).upper(),'right':right,'strike':strike,'days_to_expiry':dte,
+            'bid':float(bid),'ask':float(ask),'mid':round(mid,4),'open_interest':oi,'spread_pct':round(spread_pct,4),
+            'conservative_sell_entry':float(bid),'conservative_buy_entry':float(ask),
+            'iv_at_ask':iv_ask.get('solved_iv_from_premium'),'iv_status':iv_ask.get('iv_solver_status'),
+            'greeks_at_ask':iv_ask.get('greeks')
+        })
+    return {'symbol':str(symbol).upper(),'spot':s,'eligible_contracts':eligible,'rejected_contracts':rejected}
+
+def analyze_option_roll(spot, close_strike, close_dte, close_ask, open_strike, open_dte, open_bid, contracts=1, multiplier=100, risk_free_rate='0.04'):
+    """v0.4.1 R03: Conservative option roll analysis (buy-to-close at ask, sell-to-open at bid)."""
+    n=int(contracts); mult=float(multiplier)
+    close_cost=float(close_ask)*n*mult
+    open_credit=float(open_bid)*n*mult
+    net_cashflow=open_credit-close_cost
+    c_info=analyze_option_strategy('covered_call', spot, close_strike, close_dte, premium=str(close_ask), risk_free_rate=str(risk_free_rate))
+    o_info=analyze_option_strategy('covered_call', spot, open_strike, open_dte, premium=str(open_bid), risk_free_rate=str(risk_free_rate))
+    return {
+        'contracts':n,'multiplier':mult,
+        'close_debit_at_ask':round(close_cost,2),'open_credit_at_bid':round(open_credit,2),
+        'net_roll_cashflow':round(net_cashflow,2),'is_net_credit':net_cashflow>0,
+        'close_leg_iv':c_info.get('solved_iv_from_premium'),'open_leg_iv':o_info.get('solved_iv_from_premium')
+    }
+
+def select_valuation_method(company_profile):
+    """v0.5.1 V02: Select sector-appropriate primary valuation method rather than applying a single DCF blindly."""
+    prof=str(company_profile or 'mature_tech').strip().lower()
+    mapping={
+        'mature_tech':{'primary':'fcff_dcf_and_forward_multiples','secondary':'reverse_dcf'},
+        'high_growth_software':{'primary':'driver_based_dcf','secondary':'ev_to_gross_profit_fade'},
+        'semiconductor':{'primary':'cyclical_scenario_dcf','secondary':'normalized_midcycle_pe'},
+        'early_stage_pre_profit':{'primary':'probability_weighted_milestones_and_runway','secondary':'cash_runway_dilution'},
+        'financials':{'primary':'residual_income','secondary':'price_to_tangible_book_roe'},
+        'diversified':{'primary':'sotp','secondary':'consolidated_dcf'},
+    }
+    return {'company_profile':prof,**(mapping.get(prof, mapping['mature_tech']))}
+
+def residual_income_valuation(book_value_per_share, roe, cost_of_equity, payout_ratio='0.30', years=5, terminal_growth='0.03'):
+    """v0.5.1 V02: Residual Income Model for banks/financials where FCFF is undefined."""
+    bv=float(book_value_per_share); r_eq=float(roe); ke=float(cost_of_equity); pay=float(payout_ratio); gt=float(terminal_growth)
+    for v in (bv, r_eq, ke, pay, gt):
+        if v!=v or abs(v)==float('inf'): raise ValueError('finite inputs required')
+    if bv<=0 or ke<=gt: raise ValueError('positive book_value_per_share and cost_of_equity > terminal_growth required')
+    pv_ri=0.0; cur_bv=bv; last_ri=0.0
+    for yr in range(1, int(years)+1):
+        ni=cur_bv*r_eq
+        ri=ni-ke*cur_bv
+        pv_ri+=ri/((1.0+ke)**yr)
+        cur_bv+=ni*(1.0-pay)
+        last_ri=ri
+    tv_ri=(last_ri*(1.0+gt))/(ke-gt) if last_ri>0 else 0.0
+    pv_tv=tv_ri/((1.0+ke)**int(years))
+    fair_px=bv+pv_ri+pv_tv
+    return {'method':'residual_income','book_value_per_share':bv,'fair_value_per_share':round(fair_px,2),'implied_pb':round(fair_px/bv,2)}
+
+def sotp_valuation(segments, net_debt='0', shares='10'):
+    """v0.5.1 V02: Sum-of-the-Parts (SOTP) valuation across heterogeneous business segments."""
+    sh=float(shares); debt=float(net_debt)
+    if sh<=0: raise ValueError('positive shares required')
+    tot_ev=0.0; breakdown=[]
+    for seg in (segments or []):
+        ev_s=float(seg['ev'])
+        if ev_s!=ev_s or abs(ev_s)==float('inf'): raise ValueError('finite segment EV required')
+        tot_ev+=ev_s
+        breakdown.append({'segment':seg['name'],'ev':round(ev_s,2),'method':seg.get('method','ebitda_multiple')})
+    eq=tot_ev-debt
+    return {'method':'sotp','total_ev':round(tot_ev,2),'equity_value':round(eq,2),'per_share':round(eq/sh,2),'segments':breakdown}
+
+def simulate_cashflow_strategy(symbol='QQQ', initial_capital='10000', monthly_contribution='500', strategy='buy_and_hold', cost_bps='5', cash_yield='0.04', financing_rate='0.045'):
+    """v0.7.0 Q01/Q02: Reproducible cash-flow-matched strategy simulator with scheduled contributions, idle cash yield, next-bar open execution, and BacktestSpec hash."""
+    sym=str(symbol or 'QQQ').strip().upper()
+    cap0=float(initial_capital); m_contrib=float(monthly_contribution); fee_r=float(cost_bps)/10000.0; c_y=float(cash_yield); fin_r=float(financing_rate)
+    rows=market.bars(sym, 10000)
+    if len(rows)<40: return {'status':'insufficient_history','symbol':sym,'rows':len(rows)}
+    opens=[float(r.get('open') or r['close']) for r in rows]
+    closes=[float(r['close']) for r in rows]
+    dates=[r['date'] for r in rows]
+    n=len(closes)
+    spec={'symbol':sym,'initial_capital':cap0,'monthly_contribution':m_contrib,'strategy':strategy,'cost_bps':float(cost_bps),'cash_yield':c_y,'financing_rate':fin_r,'from':dates[0],'to':dates[-1],'rows':n}
+    spec_hash=hashlib.sha256(json.dumps(spec, sort_keys=True).encode('utf-8')).hexdigest()[:16]
+    total_contrib=cap0
+    sh=0.0; cash=cap0
+    if strategy=='buy_and_hold':
+        sh=(cash*(1.0-fee_r))/opens[0]; cash=0.0
+    elif strategy=='70_30_dip_buy':
+        sh=(cash*0.70*(1.0-fee_r))/opens[0]; cash*=0.30
+    pk=closes[0]; t1=False; t2=False; curve=[cap0]
+    for i in range(1, n):
+        cash*=(1.0+c_y/252.0)
+        if i%21==0 and m_contrib>0:
+            cash+=m_contrib; total_contrib+=m_contrib
+            if strategy=='buy_and_hold':
+                sh+=(cash*(1.0-fee_r))/opens[i]; cash=0.0
+        if strategy=='70_30_dip_buy':
+            if closes[i-1]>=pk: pk=closes[i-1]; t1=False; t2=False
+            dd=(closes[i-1]/pk)-1.0
+            if dd<=-0.08 and not t1 and cash>0:
+                sp=cash*0.5; sh+=(sp*(1.0-fee_r))/opens[i]; cash-=sp; t1=True
+            if dd<=-0.15 and not t2 and cash>0:
+                sp=cash; sh+=(sp*(1.0-fee_r))/opens[i]; cash=0.0; t2=True
+        curve.append(sh*closes[i]+cash)
+    end_val=curve[-1]
+    return {'status':'ok','backtest_spec_hash':spec_hash,'spec':spec,'total_contributed':round(total_contrib,2),'terminal_wealth':round(end_val,2),'net_profit':round(end_val-total_contrib,2),'multiple_on_contributed':round(end_val/total_contrib,3) if total_contrib>0 else None}

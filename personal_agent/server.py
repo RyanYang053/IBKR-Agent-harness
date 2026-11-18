@@ -1,7 +1,7 @@
 """Separate stdio MCP process for each domain. Do not expose a universal shell/SQL tool."""
 import argparse
 from mcp.server.fastmcp import FastMCP
-from . import decision, finance, knowledge, market, ops, quant, report
+from . import broker, decision, finance, knowledge, market, ops, quant, report
 
 def make_server(domain, public_only=False):
     surface=domain+('-public' if public_only else '')
@@ -167,6 +167,18 @@ def make_server(domain, public_only=False):
             def get_system_telemetry(limit:int=20)->dict:
                 """Read DLP-safe runtime observability metrics: tool call counts, latency ms, error counts, and token budget footprint."""
                 return ops.telemetry_summary(limit)
+            @tool()
+            def get_broker_reconciliation()->dict:
+                """Compare latest read-only broker snapshot against reconciled Flex PortfolioSnapshot without overwriting Flex."""
+                return broker.reconcile_live_to_flex()
+            @tool()
+            def get_canadian_acb(symbol:str='',account:str='')->dict:
+                """Compute pooled Canadian Adjusted Cost Base (ACB) and realized capital gains from recorded trades."""
+                return decision.compute_canadian_acb(symbol or None, account or None)
+            @tool()
+            def get_shadow_mode_status()->dict:
+                """Run v1.0 shadow-mode operational readiness check across Flex, broker reconciliation, IPS, and evals."""
+                return ops.shadow_mode_check()
         @tool()
         def value_dcf(fcff:str,wacc:str,growth:str,net_debt:str,shares:str,symbol:str='')->dict:
             """One-stage DCF from explicit inputs. Live upside is withheld unless the cached quote is live."""
@@ -220,6 +232,14 @@ def make_server(domain, public_only=False):
         def get_filings(symbol:str)->list:
             """Read cached SEC EDGAR annual XBRL financial statement facts (10-K/20-F)."""
             return market.filings(symbol)
+        @tool()
+        def get_pit_financial_facts(symbol:str,as_of:str='')->dict:
+            """Query Point-in-Time standardized financial facts available on or before as_of."""
+            return market.get_facts_pit(symbol, as_of=as_of)
+        @tool()
+        def get_valuation_method(company_profile:str='mature_tech')->dict:
+            """Select sector-appropriate primary and secondary valuation methodologies."""
+            return quant.select_valuation_method(company_profile)
         @tool()
         def audit_sec_filing_delta(symbol:str)->dict:
             """Forensic SEC 10-K/20-F XBRL accrual/dilution quality checks + consecutive Risk Factor paragraph diff (~95% boilerplate stripped, modal escalation detection)."""
