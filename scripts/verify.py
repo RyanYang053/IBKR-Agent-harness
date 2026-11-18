@@ -226,6 +226,57 @@ def knowledge_checks(home):
     bk_res = core.backup_databases(home / 'test_backup')
     check('durable workflow resume and wal backup', resume_mismatch and wf_resumed['status'] == 'completed' and wf_state['retry_count'] == 1 and bk_res['status'] == 'ok' and len(bk_res['databases']) >= 3)
 
+    # 9. Canonical PortfolioSnapshot, FX fail-closed, option FX delta-notional, crash-recoverable approval_intents, & DB migration
+    with tempfile.TemporaryDirectory() as v_tmp:
+        from personal_agent import core, finance
+        prev_h2 = os.environ.get('PERSONAL_AGENT_HOME')
+        os.environ['PERSONAL_AGENT_HOME'] = v_tmp
+        reload(core); reload(finance); reload(quant); reload(ops)
+        # Missing FX fails closed
+        with core.db('finance') as c:
+            finance.schema(c)
+            for acct in ('margin', 'tfsa'):
+                for d, v in [('2026-11-15', '500'), ('2026-11-17', '570')]:
+                    c.execute('INSERT INTO nav VALUES(?,?,?,?,?,?)', (acct, d, 'CAD', v, v, 'syn'))
+            c.execute('INSERT INTO records VALUES(?,?,?,?,?)', ('margin', 'cash', 'fx1', json.dumps({'type': 'deposit', 'amount': '100', 'currency': 'USD', 'reportDate': '20261116'}), 'syn'))
+        with patch.object(finance, 'portfolio', return_value={'status': 'ok', 'nav': '1140', 'as_of': '2026-11-17'}):
+            fx_perf = finance.performance()
+        check('foreign cash flow missing fx fails closed', fx_perf['status'] == 'missing_fx_rate' and fx_perf['twr'] is None)
+
+        # Canonical PortfolioSnapshot gross exposure & FX option delta-notional & unknown account / missing buying power
+        snap_multi = {
+            'status': 'ok', 'advice_allowed': True, 'as_of': date.today().isoformat(), 'nav': '10000', 'currency': 'CAD',
+            'accounts': [{'account': 'taxable', 'nav': '5000', 'cash': '1000'}, {'account': 'tfsa', 'nav': '5000', 'cash': None}],
+            'positions': [
+                {'account': 'taxable', 'conid': '1', 'symbol': 'SYNTH', 'asset': 'STK', 'currency': 'CAD', 'quantity': '100', 'value_base': '8000'},
+                {'account': 'tfsa', 'conid': '1', 'symbol': 'SYNTH', 'asset': 'STK', 'currency': 'CAD', 'quantity': '-100', 'value_base': '-8000'},
+                {'account': 'taxable', 'conid': '2', 'symbol': 'OPTUSD', 'asset': 'OPT', 'currency': 'USD', 'quantity': '1', 'multiplier': '100', 'value_base': '700', 'underlying_price': '100', 'underlying_currency': 'USD', 'fx_rate_to_base': '1.4', 'delta': '0.5'},
+            ]
+        }
+        pol_cfg = {'core_symbols': ['QQQ'], 'min_cash_reserve': 0, 'core_min_weight': 0, 'tactical_max_weight': 5, 'max_single_stock_weight': 5, 'max_gross_economic_leverage': 10, 'max_economic_leverage': 10, 'max_drawdown_budget': -0.25}
+        p_res = quant.evaluate_policy(snap_multi, investment_policy=pol_cfg)
+        p_unk = quant.evaluate_policy(snap_multi, {'symbol': 'QQQ', 'action': 'BUY', 'amount_base': '100', 'account': 'ghost_acct'}, investment_policy=pol_cfg)
+        p_nobp = quant.evaluate_policy(snap_multi, {'symbol': 'QQQ', 'action': 'BUY', 'amount_base': '100', 'account': 'tfsa'}, investment_policy=pol_cfg)
+        check('canonical snapshot gross and option fx delta', abs(p_res['exposure_summary']['gross_economic_exposure'] - 2.3) < 1e-6 and abs(p_res['exposure_summary']['options_delta_equiv_weight'] - 0.7) < 1e-6)
+        check('unknown account and missing bp fail closed', any(b['rule'] == 'unknown_account' for b in p_unk['hard_blocks']) and any(b['rule'] == 'missing_account_buying_power' for b in p_nobp['hard_blocks']))
+
+        # Crash recovery of approval_intents (approving with memory_id set) + reject race
+        with core.db('ops') as c:
+            ops.schema(c)
+        wf_cr = ops.run_workflow('equity_valuation_and_expectations', {'symbol': 'QQQ', 'propose_thesis': 'Crash test', 'falsifier': 'Break'})
+        with core.db('ops') as c:
+            c.execute("UPDATE workflow_runs SET status='approving' WHERE run_id=?", (wf_cr['run_id'],))
+            c.execute("INSERT INTO approval_intents VALUES(?,?,?,?,?,?)", (wf_cr['run_id'], 'approving', 'crash', 777, core.now(), core.now()))
+        rec_res = ops.approve_workflow(wf_cr['run_id'])
+        rej_after = False
+        try:
+            ops.reject_workflow(wf_cr['run_id'], 'late reject')
+        except ValueError:
+            rej_after = True
+        check('approval_intents crash recovery and reject race', rec_res.get('recovered') is True and rec_res['committed_memory_id'] == 777 and rej_after)
+        os.environ['PERSONAL_AGENT_HOME'] = prev_h2
+        reload(core); reload(finance); reload(quant); reload(ops)
+
     ev = ops.run_eval_benchmark()
     check('evaluation harness 100pct', ev['passed'] == ev['total'] and ev['score_pct'] == 100.0, ev)
 

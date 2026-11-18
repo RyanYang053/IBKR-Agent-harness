@@ -5,7 +5,7 @@ from personal_agent.decision import attach_market_price, counterfactual_attribut
 from personal_agent.finance import history, performance, portfolio, transactions
 from personal_agent.knowledge import resolve_memory, save_journal, save_lesson
 from personal_agent.market import bars, quote_board, sync_quotes, system_health
-from personal_agent.ops import approve_workflow, list_eval_runs, list_workflow_runs, list_workflows, reject_workflow, run_eval_benchmark, run_workflow, telemetry_summary
+from personal_agent.ops import approve_workflow, list_eval_runs, list_workflow_runs, list_workflows, reject_workflow, resume_workflow, run_eval_benchmark, run_workflow, telemetry_summary
 from personal_agent.quant import advanced_tail_and_regime_risk, allocate_incremental_capital, analyze_option_strategy, backtest_strategies, driver_based_valuation, evaluate_expectation_gap, get_living_thesis, policy_compliance, record_earnings_expectation, simulate_leveraged_etf, triage_catalyst_event, upsert_living_thesis
 from personal_agent.report import daily_brief
 
@@ -313,6 +313,13 @@ with ops_tab:
                 st.json(approve_workflow(sel_run, op_note)); st.rerun()
             if st.button('Reject'):
                 st.json(reject_workflow(sel_run, op_note or 'rejected_in_dashboard')); st.rerun()
+    running_runs=list_workflow_runs('running', 10)
+    if running_runs:
+        rc1, rc2=st.columns([2,1])
+        with rc1: sel_res_run=st.selectbox('Interrupted Running Run ID', [r['run_id'] for r in running_runs])
+        with rc2:
+            if st.button('Resume Run'):
+                st.json(resume_workflow(sel_res_run)); st.rerun()
     wc1, wc2=st.columns(2)
     with wc1:
         wf_choice=st.selectbox('Workflow', [w['workflow_id'] for w in list_workflows()])

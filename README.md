@@ -247,7 +247,7 @@ ibkr-agent approve <run_id> --note "Approved IC Memo"
 ├── tests/fixtures/                    # 100% synthetic Flex XML test fixtures
 ├── dashboard.py                       # 9-tab Personal Investment Intelligence Streamlit UI
 ├── IMPLEMENTATION.md                  # Architectural invariants & accounting specification
-└── pyproject.toml                     # Package manifest (`ibkr-agent-harness` v0.3.0)
+└── pyproject.toml                     # Package manifest (`ibkr-agent-harness` v0.3.2)
 ```
 
 ---

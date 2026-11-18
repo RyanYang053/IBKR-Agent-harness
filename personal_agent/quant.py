@@ -6,7 +6,7 @@ import json, math
 from pathlib import Path
 import numpy as np
 from .core import ROOT, bounded, db, now
-from .finance import dec, performance, portfolio
+from .finance import AccountRecord, PortfolioSnapshot, PositionRecord, canonical_snapshot, dec, performance, portfolio
 from . import decision, market
 
 def _quant_schema(c):
@@ -124,19 +124,25 @@ def policy_hash(pol=None):
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode('utf-8')).hexdigest()[:16]
 
 def evaluate_policy(portfolio_snapshot=None, proposed_trade=None, market_snapshot=None, investment_policy=None, account=None):
-    """Single canonical IPS Policy Engine governing portfolio audit, pre-trade gatekeeper, capital allocation, options, and human approvals."""
+    """Single canonical IPS Policy Engine using immutable per-account, per-contract PortfolioSnapshot (never tax-aggregated)."""
     pol=investment_policy or load_policy()
-    snap=portfolio_snapshot or portfolio()
-    if 'nav' not in snap:
-        return {'status':'blocked','reason':snap.get('status','unavailable'),'hard_blocks':[{'rule':'ledger_unavailable','detail':snap.get('status','unavailable')}],'breaches':[]}
-    tax_all=decision.tax_positions(account=account)
+    raw_snap=portfolio_snapshot if portfolio_snapshot is not None else portfolio()
+    if isinstance(raw_snap, dict) and 'nav' not in raw_snap:
+        return {'status':'blocked','reason':raw_snap.get('status','unavailable'),'hard_blocks':[{'rule':'ledger_unavailable','detail':raw_snap.get('status','unavailable')}],'breaches':[],'risk_coverage_complete':False}
+    # Use raw per-account positions when available; fall back to tax_positions only if a dict snapshot omitted positions
+    fallback_pos=None
+    if isinstance(raw_snap, dict) and raw_snap.get('positions') is None:
+        fallback_pos=(decision.tax_positions(account=account).get('positions') or [])
+    csnap=canonical_snapshot(raw_snap, tax_positions_fallback=fallback_pos)
+    if csnap.status in {'unavailable','date_mismatch','unmatched_transfers'} or csnap.nav<=0:
+        return {'status':'invalid_nav' if csnap.nav<=0 else csnap.status,'hard_blocks':[{'rule':'ledger_unavailable','detail':csnap.status}],'breaches':[],'risk_coverage_complete':False}
     perf=performance()
     r_base=decision.risk()
-    acct_rows=[a for a in snap.get('accounts',[]) if not account or a['account']==account]
-    nav=float(sum((dec(a['nav']) for a in acct_rows), Decimal(0)))
-    cash=float(sum((dec(a['cash']) for a in acct_rows if a.get('cash') not in (None,'')), Decimal(0)))
+    acct_rows=[a for a in csnap.accounts if not account or a.account==account]
+    nav=float(sum((a.nav for a in acct_rows), Decimal(0))) if acct_rows else float(csnap.nav)
+    cash=float(sum((a.cash for a in acct_rows if a.cash is not None), Decimal(0))) if acct_rows else float(csnap.cash)
     if nav<=0:
-        return {'status':'invalid_nav','hard_blocks':[{'rule':'invalid_nav','detail':'Portfolio NAV <= 0'}],'breaches':[]}
+        return {'status':'invalid_nav','hard_blocks':[{'rule':'invalid_nav','detail':'Portfolio NAV <= 0'}],'breaches':[],'risk_coverage_complete':False}
     lev_map={k.upper():float(v) for k,v in (pol.get('leveraged_etf_multipliers') or {}).items()}
     core_set={s.upper() for s in (pol.get('core_symbols') or [])}
     max_single=float(pol.get('max_single_stock_weight', 0.15))
@@ -150,53 +156,58 @@ def evaluate_policy(portfolio_snapshot=None, proposed_trade=None, market_snapsho
 
     pos_entries=[]
     pos_vals={}
-    pos_assets={}
-    for p in (tax_all.get('positions') or []):
-        sym=p['symbol'].upper()
-        acct_p=str(p.get('account') or '').strip()
-        val_p=float(dec(p['total_value_base']))
-        asset_p=(p.get('asset') or 'STK').upper()
-        pos_entries.append({'symbol':sym,'account':acct_p,'value':val_p,'asset':asset_p,'raw':p})
-        pos_vals[sym]=pos_vals.get(sym, 0.0)+val_p
-        pos_assets[sym]=asset_p
+    for p in csnap.positions:
+        if account and p.account and p.account!=account: continue
+        val_p=float(p.market_value_base)
+        pos_entries.append({'symbol':p.symbol,'account':p.account,'value':val_p,'asset':p.asset,'rec':p})
+        pos_vals[p.symbol]=pos_vals.get(p.symbol, 0.0)+val_p
 
     post_entries=[dict(e) for e in pos_entries]
     post_cash=cash
     hard_blocks=[]
-    trade_acct=None
-    trade_sym=None
-    trade_act=None
-    trade_amt=0.0
+    trade_acct=None; trade_sym=None; trade_act=None; trade_amt=0.0
     acct_constraints=pol.get('account_constraints') or {}
     if proposed_trade:
         trade_sym=str(proposed_trade.get('symbol') or '').strip().upper()
         trade_act=str(proposed_trade.get('action') or 'BUY').strip().upper()
         trade_amt=abs(float(dec(proposed_trade.get('amount_base') or 0)))
         trade_acct=str(proposed_trade.get('account') or '').strip()
-        trade_asset=str(proposed_trade.get('asset') or pos_assets.get(trade_sym, 'STK')).upper()
+        trade_asset=str(proposed_trade.get('asset') or 'STK').upper()
         if trade_sym and trade_amt>0:
-            pos_assets.setdefault(trade_sym, trade_asset)
             if trade_act in {'BUY','ADD'}:
                 if trade_acct:
-                    acct_row=next((a for a in acct_rows if a['account']==trade_acct), None)
-                    acct_cash=float(dec(acct_row.get('cash') or 0)) if (acct_row and acct_row.get('cash') not in (None,'')) else None
-                    acct_rule=acct_constraints.get(trade_acct) or acct_constraints.get(trade_acct.lower()) or {}
-                    allow_margin=acct_rule.get('allow_margin', False if trade_acct.lower() in {'tfsa','rrsp','fhsa'} else True)
-                    if acct_cash is not None and not allow_margin and trade_amt>acct_cash+1e-6:
-                        hard_blocks.append({'rule':'insufficient_account_buying_power','symbol':trade_sym,'account':trade_acct,'requested_buy':round(trade_amt,2),'available_cash_base':round(acct_cash,2)})
+                    acct_row=next((a for a in acct_rows if a.account==trade_acct), None)
+                    if acct_row is None:
+                        hard_blocks.append({'rule':'unknown_account','symbol':trade_sym,'account':trade_acct,'detail':f'Account {trade_acct} not found in snapshot.'})
+                    else:
+                        acct_rule=acct_constraints.get(trade_acct) or acct_constraints.get(trade_acct.lower()) or acct_constraints.get(acct_row.tax_bucket) or {}
+                        allow_margin=acct_rule.get('allow_margin', acct_row.allow_margin)
+                        if acct_row.cash is None and not allow_margin:
+                            hard_blocks.append({'rule':'missing_account_buying_power','symbol':trade_sym,'account':trade_acct,'detail':f'Missing cash/buying power for non-margin account {trade_acct}.'})
+                        elif acct_row.cash is not None and not allow_margin and trade_amt>float(acct_row.cash)+1e-6:
+                            hard_blocks.append({'rule':'insufficient_account_buying_power','symbol':trade_sym,'account':trade_acct,'requested_buy':round(trade_amt,2),'available_cash_base':round(float(acct_row.cash),2)})
                 matched_idx=next((i for i,e in enumerate(post_entries) if e['symbol']==trade_sym and (not trade_acct or e['account']==trade_acct)), None)
                 if matched_idx is not None:
                     post_entries[matched_idx]['value']+=trade_amt
                 else:
-                    post_entries.append({'symbol':trade_sym,'account':trade_acct,'value':trade_amt,'asset':trade_asset,'raw':proposed_trade})
+                    t_rec=PositionRecord(
+                        account=trade_acct, conid=trade_sym, symbol=trade_sym, asset=trade_asset,
+                        currency=csnap.currency, quantity=dec(proposed_trade.get('quantity') or 0) if proposed_trade.get('quantity') is not None else Decimal(0),
+                        multiplier=dec(proposed_trade.get('multiplier') or (100 if trade_asset=='OPT' else 1)),
+                        market_value_base=dec(trade_amt),
+                        underlying_price=dec(proposed_trade['underlying_price']) if proposed_trade.get('underlying_price') is not None else None,
+                        underlying_currency=str(proposed_trade.get('underlying_currency') or csnap.currency).upper(),
+                        fx_rate_to_base=dec(proposed_trade['fx_rate_to_base']) if proposed_trade.get('fx_rate_to_base') is not None else Decimal(1),
+                        delta=dec(proposed_trade['delta']) if proposed_trade.get('delta') is not None else None,
+                    )
+                    post_entries.append({'symbol':trade_sym,'account':trade_acct,'value':trade_amt,'asset':trade_asset,'rec':t_rec})
                 post_cash-=trade_amt
             elif trade_act in {'SELL','TRIM'}:
-                acct_val=0.0
                 if trade_acct:
-                    acct_tax=decision.tax_positions(account=trade_acct)
-                    for ap in (acct_tax.get('positions') or []):
-                        if ap['symbol'].upper()==trade_sym:
-                            acct_val+=float(dec(ap['total_value_base']))
+                    acct_row=next((a for a in acct_rows if a.account==trade_acct), None)
+                    if acct_row is None:
+                        hard_blocks.append({'rule':'unknown_account','symbol':trade_sym,'account':trade_acct})
+                    acct_val=sum(e['value'] for e in post_entries if e['symbol']==trade_sym and e['account']==trade_acct)
                 else:
                     acct_val=pos_vals.get(trade_sym, 0.0)
                 if acct_val<=0 or trade_amt>acct_val*1.001:
@@ -209,25 +220,21 @@ def evaluate_policy(portfolio_snapshot=None, proposed_trade=None, market_snapsho
     nom_eq=0.0; net_econ_eq=0.0; gross_econ_eq=0.0; opt_wt=0.0; opt_econ_wt=0.0; opt_unknown=False; core_wt=0.0; tac_wt=0.0
     breaches=[]; pos_econ=[]; sym_net_vals={}
     for e in post_entries:
-        sym=e['symbol']; val=e['value']; asset=e['asset']; raw=e['raw']
+        sym=e['symbol']; val=e['value']; asset=e['asset']; rec=e['rec']
         if abs(val)<1e-6 and sym!=trade_sym: continue
         w=val/nav
         if asset=='OPT':
             opt_wt+=abs(w)
-            delta_v=raw.get('delta'); und_px=raw.get('underlying_price'); mult_v=raw.get('multiplier')
-            lots=raw.get('lots') or []
-            qty_v=raw.get('quantity') if raw.get('quantity') is not None else (sum(float(dec(l.get('quantity') or 0)) for l in lots) if lots else None)
-            if delta_v is not None and und_px is not None and qty_v is not None:
-                m_val=float(mult_v) if mult_v is not None else 100.0
-                ew=(float(qty_v)*m_val*float(und_px)*float(delta_v))/nav
+            if rec.delta is not None and rec.underlying_price is not None and rec.quantity!=0 and rec.fx_rate_to_base is not None:
+                ew=(float(rec.quantity)*float(rec.multiplier)*float(rec.underlying_price)*float(rec.fx_rate_to_base)*float(rec.delta))/nav
                 opt_econ_wt+=ew
                 net_econ_eq+=ew
                 gross_econ_eq+=abs(ew)
                 tac_wt+=max(0.0, w)
-                pos_econ.append({'symbol':sym,'account':e['account'],'asset':'OPT','nominal_weight':round(w,4),'delta':float(delta_v),'economic_weight':round(ew,4),'bucket':'tactical_option'})
+                pos_econ.append({'symbol':sym,'account':e['account'],'asset':'OPT','nominal_weight':round(w,4),'delta':float(rec.delta),'fx_rate_to_base':float(rec.fx_rate_to_base),'economic_weight':round(ew,4),'bucket':'tactical_option'})
             else:
                 opt_unknown=True
-                hard_blocks.append({'rule':'option_delta_notional_unavailable','symbol':sym,'detail':'Option position lacks contract quantity, underlying_price, or delta; refusing silent premium-based exposure.'})
+                hard_blocks.append({'rule':'option_delta_notional_unavailable','symbol':sym,'detail':'Option position lacks contract quantity, underlying_price, fx_rate_to_base, or delta; refusing silent premium-based exposure.'})
                 pos_econ.append({'symbol':sym,'account':e['account'],'asset':'OPT','nominal_weight':round(w,4),'economic_weight':None,'bucket':'tactical_option'})
             continue
         mult=lev_map.get(sym, 1.0)
@@ -262,14 +269,16 @@ def evaluate_policy(portfolio_snapshot=None, proposed_trade=None, market_snapsho
     if cur_dd<dd_budget:
         breaches.append({'rule':'max_drawdown_budget_exceeded','actual':round(cur_dd,4),'limit':dd_budget})
 
-    if not snap.get('advice_allowed'):
+    if not csnap.advice_allowed:
         hard_blocks.append({'rule':'stale_or_incomplete_ledger','detail':'Ledger snapshot is stale or incomplete; sync Flex before acting.'})
 
     status='compliant' if (not breaches and not hard_blocks) else ('blocked_policy_violation' if hard_blocks else 'policy_breaches_detected')
     return {
         'status':status,
+        'snapshot_id':csnap.snapshot_id,
         'policy_hash':policy_hash(pol),
-        'as_of':snap.get('as_of'),
+        'as_of':csnap.as_of,
+        'risk_coverage_complete':not opt_unknown,
         'policy_targets':{
             'return_objective_annual':pol.get('return_objective_annual'),
             'core_benchmark':pol.get('core_benchmark'),
@@ -295,8 +304,8 @@ def evaluate_policy(portfolio_snapshot=None, proposed_trade=None, market_snapsho
         'risk_budget':{'max_drawdown_realized':round(cur_dd,4),'drawdown_budget':dd_budget,'drawdown_budget_utilized_pct':round(dd_used*100.0,1),'portfolio_twr_approx':perf.get('twr')},
         'hard_blocks':hard_blocks,
         'breaches':breaches,
-        'position_economic_exposures':pos_econ[:25],
-        'limitations':['Economic exposure multiplies leveraged ETFs by daily reset multipliers and includes options at explicit or 0.50 fallback delta equivalent.']
+        'position_economic_exposures':pos_econ,
+        'limitations':['Evaluated over canonical per-account, per-contract PortfolioSnapshot; option delta-notional requires quantity, multiplier, underlying_price, fx_rate_to_base, and delta.']
     }
 
 def policy_compliance(account=None):
@@ -582,6 +591,46 @@ def evaluate_expectation_gap(symbol, period=''):
     snap_merged={**pre,**merged_act,'history_entries':len(rows)}
     return {'symbol':sym,'period':per,'basis':pre['basis'],'verdict':verdict,'revenue_surprise_pct':round(rev_surp,4) if rev_surp is not None else None,'eps_surprise_pct':round(eps_surp,4) if eps_surp is not None else None,'guidance_growth_delta':round(guide_diff,4) if guide_diff is not None else None,'snapshot':snap_merged}
 
+def simulate_allocation(portfolio_snapshot, cash_contribution=0.0, proposed_trades=None):
+    """Return a new immutable PortfolioSnapshot reflecting a cash contribution and a list of proposed trades."""
+    csnap=canonical_snapshot(portfolio_snapshot)
+    contrib=dec(cash_contribution or 0)
+    accts=list(csnap.accounts)
+    pos_list=list(csnap.positions)
+    if contrib!=0 and accts:
+        # Credit contribution to first taxable/margin account (or first account)
+        idx=next((i for i,a in enumerate(accts) if a.allow_margin), 0)
+        a0=accts[idx]
+        accts[idx]=AccountRecord(account=a0.account, tax_bucket=a0.tax_bucket, nav=a0.nav+contrib, cash=(a0.cash or Decimal(0))+contrib, allow_margin=a0.allow_margin, source=a0.source)
+    for tr in (proposed_trades or []):
+        sym=str(tr.get('symbol') or '').strip().upper()
+        act=str(tr.get('action') or 'BUY').strip().upper()
+        amt=abs(dec(tr.get('amount_base') or 0))
+        acct_t=str(tr.get('account') or '').strip()
+        if not sym or amt<=0: continue
+        delta_v=amt if act in {'BUY','ADD'} else -amt
+        if acct_t:
+            for i, a in enumerate(accts):
+                if a.account==acct_t:
+                    accts[i]=AccountRecord(account=a.account, tax_bucket=a.tax_bucket, nav=a.nav, cash=(a.cash or Decimal(0))-delta_v, allow_margin=a.allow_margin, source=a.source)
+                    break
+        elif accts:
+            a0=accts[0]
+            accts[0]=AccountRecord(account=a0.account, tax_bucket=a0.tax_bucket, nav=a0.nav, cash=(a0.cash or Decimal(0))-delta_v, allow_margin=a0.allow_margin, source=a0.source)
+        p_idx=next((i for i,p in enumerate(pos_list) if p.symbol==sym and (not acct_t or p.account==acct_t)), None)
+        if p_idx is not None:
+            p0=pos_list[p_idx]
+            pos_list[p_idx]=PositionRecord(account=p0.account, conid=p0.conid, symbol=p0.symbol, asset=p0.asset, currency=p0.currency, quantity=p0.quantity, multiplier=p0.multiplier, market_value_base=max(Decimal(0), p0.market_value_base+delta_v), underlying_price=p0.underlying_price, underlying_currency=p0.underlying_currency, fx_rate_to_base=p0.fx_rate_to_base, delta=p0.delta, source=p0.source)
+        elif delta_v>0:
+            pos_list.append(PositionRecord(account=acct_t or (accts[0].account if accts else ''), conid=sym, symbol=sym, asset=str(tr.get('asset') or 'STK').upper(), currency=csnap.currency, quantity=Decimal(0), multiplier=Decimal(1), market_value_base=delta_v))
+    return PortfolioSnapshot(
+        snapshot_id=f'{csnap.snapshot_id}_sim',
+        as_of=csnap.as_of, status=csnap.status, stale=csnap.stale,
+        advice_allowed=csnap.advice_allowed, positions_complete=csnap.positions_complete,
+        currency=csnap.currency, nav=csnap.nav+contrib, cash=csnap.cash+contrib,
+        accounts=tuple(accts), positions=tuple(pos_list), limitations=csnap.limitations
+    )
+
 def allocate_incremental_capital(amount_base, candidates=None, expected_returns=None, account_constraints=None):
     """Full-Portfolio Covariance-aware Multi-Asset Robust Optimizer + Opportunity Cost comparator under IPS limits, PSD covariance, Quarter-Kelly, and Canadian account location."""
     add_amt=float(dec(amount_base))
@@ -705,8 +754,9 @@ def allocate_incremental_capital(amount_base, candidates=None, expected_returns=
     w_opt_post_all[:m_cand]+=(x*add_share)
     port_vol_post=float(math.sqrt(max(0.0, float(w_opt_post_all.T@cov_all@w_opt_post_all)))) if m_all>0 else 0.0
     port_ret_post=float(np.dot(w_opt_post_all, np.array([mus[s] for s in all_syms])))+(max(0.0, (cash_cur+hold_cash_amt)/new_nav))*rf
-    top_pick=opt_alloc[0] if opt_alloc else None
-    pol_check=evaluate_policy(portfolio_snapshot=snap, proposed_trade={'symbol':top_pick['symbol'],'action':'BUY','amount_base':str(top_pick['amount_base'])} if top_pick else None, investment_policy=pol)
+    post_snapshot=simulate_allocation(snap, cash_contribution=add_amt, proposed_trades=[{'symbol':a['symbol'],'action':'BUY','amount_base':str(a['amount_base'])} for a in opt_alloc])
+    pol_check=evaluate_policy(portfolio_snapshot=post_snapshot, investment_policy=pol)
+    overall_status='blocked_policy_violation' if pol_check.get('hard_blocks') else 'ok'
 
     comparisons=[]
     for i, sym in enumerate(cand_list):
@@ -738,7 +788,7 @@ def allocate_incremental_capital(amount_base, candidates=None, expected_returns=
         })
     comparisons.append({'candidate':'HOLD_CASH','bucket':'liquidity_reserve','current_weight':round(cash_cur/nav,4),'post_allocation_weight':round((cash_cur+add_amt)/new_nav,4),'annualized_vol_90d':0.0,'assumed_expected_return':round(rf,4),'expected_return_source':'macro_rf','quarter_kelly_target_weight':min_cash,'within_policy_cap':True,'recommended_account_location':'taxable_or_tfsa','location_rationale':'Dry powder for drawdown tranches and policy liquidity floor'})
     return {
-        'status':'ok',
+        'status':overall_status,
         'incremental_capital_base':round(add_amt,2),
         'currency':snap['currency'],
         'risk_free_rate_used':round(rf,4),
@@ -749,7 +799,9 @@ def allocate_incremental_capital(amount_base, candidates=None, expected_returns=
             'post_portfolio_expected_return':round(port_ret_post,4),
             'post_portfolio_annualized_vol':round(port_vol_post,4),
             'optimization_method':'full_portfolio_psd_covariance_kelly_ips_frank_wolfe',
-            'post_allocation_policy_status':pol_check.get('status')
+            'post_allocation_policy_status':pol_check.get('status'),
+            'post_allocation_policy_hard_blocks':pol_check.get('hard_blocks',[]),
+            'post_allocation_policy_breaches':pol_check.get('breaches',[])
         },
         'candidates':comparisons,
         'limitations':['Unprovided expected returns use CAPM/ERP baseline (rf + beta * ERP) penalized by estimation uncertainty; optimization spans all held equities with PSD-projected covariance.']

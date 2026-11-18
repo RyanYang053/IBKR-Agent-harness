@@ -1,9 +1,53 @@
 """Conservative Flex snapshot ingestion. Raw statements retained, not exposed to LLM."""
-import json, os, time, urllib.request, urllib.parse
+import hashlib, json, os, time, urllib.request, urllib.parse
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from .core import db, config, digest, private_dir, HOME, now, bounded, operator_env
+
+class MissingFxRateError(ValueError):
+    pass
+
+@dataclass(frozen=True)
+class AccountRecord:
+    account: str
+    tax_bucket: str
+    nav: Decimal
+    cash: Decimal | None
+    allow_margin: bool = True
+    source: str = ''
+
+@dataclass(frozen=True)
+class PositionRecord:
+    account: str
+    conid: str
+    symbol: str
+    asset: str
+    currency: str
+    quantity: Decimal
+    multiplier: Decimal
+    market_value_base: Decimal
+    underlying_price: Decimal | None = None
+    underlying_currency: str | None = None
+    fx_rate_to_base: Decimal | None = None
+    delta: Decimal | None = None
+    source: str = ''
+
+@dataclass(frozen=True)
+class PortfolioSnapshot:
+    snapshot_id: str
+    as_of: str | None
+    status: str
+    stale: bool
+    advice_allowed: bool
+    positions_complete: bool
+    currency: str
+    nav: Decimal
+    cash: Decimal
+    accounts: tuple[AccountRecord, ...] = field(default_factory=tuple)
+    positions: tuple[PositionRecord, ...] = field(default_factory=tuple)
+    limitations: tuple[str, ...] = field(default_factory=tuple)
 
 def xml(data):
     from defusedxml.ElementTree import fromstring
@@ -174,14 +218,18 @@ def _cash_rows():
     with db('finance') as c:
         schema(c)
         return [dict(r) | {'fields':json.loads(r['payload'])} for r in c.execute("SELECT * FROM records WHERE category='cash' ORDER BY rowid")]
-def _flow_amount(fields):
+def _flow_amount(fields, base_currency=None):
+    base=str(base_currency or config()['finance'].get('base_currency') or 'CAD').upper()
     if fields.get('amountInBase') not in (None,''):
         return dec(fields['amountInBase'])
     amt=dec(fields.get('amount') or 0)
+    cur=str(fields.get('currency') or '').strip().upper()
+    if not cur or cur==base:
+        return amt
     fx=fields.get('fxRateToBase')
-    if fx not in (None,''):
+    if fx not in (None,'') and dec(fx)>0:
         return amt*dec(fx)
-    return amt
+    raise MissingFxRateError(f'missing amountInBase/fxRateToBase for {cur} cash flow in {base} ledger')
 def matched_transfers(rows):
     """Pair opposite cash transfers across configured accounts using normalized Decimal amounts. Unmatched rows stay unmatched."""
     open_rows=[]
@@ -189,7 +237,11 @@ def matched_transfers(rows):
     for row in rows:
         kind=(row['fields'].get('type') or '').strip().casefold()
         if kind not in TRANSFER_TYPES: continue
-        amount=_flow_amount(row['fields']); when=day(row['fields'].get('dateTime') or row['fields'].get('reportDate') or row['fields'].get('date') or '')
+        try:
+            amount=_flow_amount(row['fields'])
+        except MissingFxRateError:
+            amount=dec(row['fields'].get('amount') or 0)
+        when=day(row['fields'].get('dateTime') or row['fields'].get('reportDate') or row['fields'].get('date') or '')
         cur=(row['fields'].get('currency') or '').upper()
         partner=next((i for i,cand in enumerate(open_rows) if cand[0]==when and cand[1]==cur and cand[3]['account']!=row['account'] and cand[2]==-amount), None)
         ident=(row['account'],row['record_id'])
@@ -199,15 +251,17 @@ def matched_transfers(rows):
             other=open_rows.pop(partner)
             matched.add(ident); matched.add((other[3]['account'],other[3]['record_id']))
     for _,_,_,row in open_rows:
-        unmatched.append({'account':row['account'],'record_id':row['record_id'],'amount':str(_flow_amount(row['fields']))})
+        unmatched.append({'account':row['account'],'record_id':row['record_id'],'amount':str(row['fields'].get('amountInBase') or row['fields'].get('amount') or 0)})
     return matched,unmatched
-def _external_by_date(rows,matched):
+def _external_by_date(rows,matched,base_currency=None):
     flows={}
     contributions=Decimal(0); withdrawals=Decimal(0)
     for row in rows:
         if (row['account'],row['record_id']) in matched: continue
         kind=(row['fields'].get('type') or '').strip().casefold()
-        amount=_flow_amount(row['fields'])
+        if kind not in ({'deposits/withdrawals','deposit/withdrawal'} | EXTERNAL_IN | EXTERNAL_OUT):
+            continue
+        amount=_flow_amount(row['fields'], base_currency=base_currency)
         when=day(row['fields'].get('dateTime') or row['fields'].get('reportDate') or row['fields'].get('date') or '')
         if kind in {'deposits/withdrawals','deposit/withdrawal'}:
             if amount>0: flows[when]=flows.get(when,Decimal(0))+amount; contributions+=amount
@@ -255,8 +309,11 @@ def performance():
             if set(rows)==aliases: series.append((date.fromisoformat(d),sum(rows.values(),Decimal(0))))
     rows=_cash_rows()
     matched,unmatched=matched_transfers(rows)
-    flows,contributions,withdrawals=_external_by_date(rows,matched)
     limitations=['Daily NAV approximation only. Exact TWR is not claimed because external-flow time within the day is not in the calculation.','A change in NAV is not investment return.','This store does not replace the Portfolio Analyzer ledger.']
+    try:
+        flows,contributions,withdrawals=_external_by_date(rows,matched,base_currency=cfg['base_currency'])
+    except MissingFxRateError as exc:
+        return {'status':'missing_fx_rate','as_of':snap.get('as_of'),'currency':cfg['base_currency'],'nav':snap.get('nav'),'unmatched_transfers':unmatched,'twr':None,'xirr':None,'limitations':limitations+[str(exc)]}
     if unmatched:
         return {'status':'unmatched_transfers','as_of':snap.get('as_of'),'currency':cfg['base_currency'],'nav':snap.get('nav'),'contributions':str(contributions),'withdrawals':str(withdrawals),'unmatched_transfers':unmatched,'twr':None,'xirr':None,'limitations':limitations+['Combined return is blocked until every internal transfer has its opposite leg.']}
     chain=Decimal(1); intervals=[]
@@ -313,3 +370,76 @@ def sync(start=None,end=None):
         if not token or not qid: raise ValueError('missing configured Flex environment variables')
         out.append(import_xml(fetch_flex(qid,token,start,end))); time.sleep(7)
     return out
+
+def canonical_snapshot(portfolio_dict=None, tax_positions_fallback=None):
+    """Build an immutable canonical PortfolioSnapshot with per-account, per-contract positions (never tax-aggregated)."""
+    if isinstance(portfolio_dict, PortfolioSnapshot):
+        return portfolio_dict
+    snap=portfolio_dict if isinstance(portfolio_dict, dict) else portfolio()
+    if 'nav' not in snap:
+        return PortfolioSnapshot(
+            snapshot_id='unavailable',
+            as_of=snap.get('as_of'),
+            status=str(snap.get('status') or 'unavailable'),
+            stale=True,
+            advice_allowed=False,
+            positions_complete=False,
+            currency=str(snap.get('currency') or config()['finance'].get('base_currency') or 'CAD').upper(),
+            nav=Decimal(0),
+            cash=Decimal(0),
+        )
+    base_cur=str(snap.get('currency') or config()['finance'].get('base_currency') or 'CAD').upper()
+    acct_map_cfg=config().get('finance',{}).get('accounts') or {}
+    accts=[]
+    tot_cash=Decimal(0)
+    for a in (snap.get('accounts') or []):
+        name=str(a.get('account') or '').strip()
+        bucket=acct_map_cfg.get(name, name.lower() if name.lower() in {'tfsa','rrsp','fhsa','taxable','margin'} else 'taxable')
+        c_val=dec(a['cash']) if a.get('cash') not in (None,'') else None
+        if c_val is not None: tot_cash+=c_val
+        allow_m=bool(a.get('allow_margin')) if 'allow_margin' in a else (bucket not in {'tfsa','rrsp','fhsa'})
+        accts.append(AccountRecord(account=name, tax_bucket=bucket, nav=dec(a['nav']), cash=c_val, allow_margin=allow_m, source=str(a.get('source') or '')))
+    raw_pos=snap.get('positions')
+    if raw_pos is None and tax_positions_fallback is not None:
+        raw_pos=tax_positions_fallback
+    pos_recs=[]
+    for p in (raw_pos or []):
+        sym=str(p.get('symbol') or '').strip().upper()
+        if not sym: continue
+        asset=str(p.get('asset') or 'STK').upper()
+        if asset=='CASH': continue
+        acct_p=str(p.get('account') or '').strip()
+        lots=p.get('lots') or []
+        qty_raw=p.get('quantity')
+        if qty_raw in (None,'') and lots:
+            qty_raw=sum((dec(l.get('quantity') or 0) for l in lots), Decimal(0))
+        qty=dec(qty_raw) if qty_raw not in (None,'') else Decimal(0)
+        val_raw=p.get('value_base') if p.get('value_base') not in (None,'') else p.get('total_value_base')
+        val_b=dec(val_raw) if val_raw not in (None,'') else Decimal(0)
+        mult=dec(p['multiplier']) if p.get('multiplier') not in (None,'') else (Decimal(100) if asset=='OPT' else Decimal(1))
+        und_px=dec(p['underlying_price']) if p.get('underlying_price') not in (None,'') else None
+        und_cur=str(p.get('underlying_currency') or p.get('currency') or base_cur).upper()
+        fx_val=dec(p['fx_rate_to_base']) if p.get('fx_rate_to_base') not in (None,'') else (dec(p['fx_rate']) if p.get('fx_rate') not in (None,'') else (Decimal(1) if und_cur==base_cur else None))
+        d_val=dec(p['delta']) if p.get('delta') not in (None,'') else None
+        pos_recs.append(PositionRecord(
+            account=acct_p, conid=str(p.get('conid') or sym), symbol=sym, asset=asset,
+            currency=str(p.get('currency') or base_cur).upper(), quantity=qty, multiplier=mult,
+            market_value_base=val_b, underlying_price=und_px, underlying_currency=und_cur,
+            fx_rate_to_base=fx_val, delta=d_val, source=str(p.get('source') or '')
+        ))
+    sid_payload={'as_of':snap.get('as_of'),'nav':str(snap['nav']),'accts':[(a.account,str(a.nav),str(a.cash)) for a in accts],'pos':[(p.account,p.conid,str(p.quantity),str(p.market_value_base)) for p in pos_recs]}
+    sid=hashlib.sha256(json.dumps(sid_payload, sort_keys=True).encode('utf-8')).hexdigest()[:16]
+    return PortfolioSnapshot(
+        snapshot_id=sid,
+        as_of=snap.get('as_of'),
+        status=str(snap.get('status') or 'ok'),
+        stale=bool(snap.get('stale')),
+        advice_allowed=bool(snap.get('advice_allowed')),
+        positions_complete=bool(snap.get('positions_complete', True)),
+        currency=base_cur,
+        nav=dec(snap['nav']),
+        cash=tot_cash,
+        accounts=tuple(accts),
+        positions=tuple(pos_recs),
+        limitations=tuple(snap.get('limitations') or ()),
+    )

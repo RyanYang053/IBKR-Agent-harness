@@ -21,6 +21,17 @@ def schema(c):
         proposed_action_json TEXT,
         acceptance_passed INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        immutable_params_json TEXT NOT NULL DEFAULT '{}',
+        input_hash TEXT NOT NULL DEFAULT '',
+        workflow_version TEXT NOT NULL DEFAULT '1'
+    );
+    CREATE TABLE IF NOT EXISTS approval_intents(
+        run_id TEXT PRIMARY KEY,
+        decision TEXT NOT NULL,
+        operator_note TEXT NOT NULL DEFAULT '',
+        memory_id INTEGER,
+        created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS telemetry_spans(
@@ -42,6 +53,10 @@ def schema(c):
         created_at TEXT NOT NULL
     );
     ''')
+    wf_cols={r[1] for r in c.execute('PRAGMA table_info(workflow_runs)')}
+    for col_def in ("immutable_params_json TEXT NOT NULL DEFAULT '{}'", "input_hash TEXT NOT NULL DEFAULT ''", "workflow_version TEXT NOT NULL DEFAULT '1'"):
+        cname=col_def.split()[0]
+        if cname not in wf_cols: c.execute(f'ALTER TABLE workflow_runs ADD COLUMN {col_def}')
 
 def record_span(surface, tool_name, status, latency_ms, approx_tokens, error_type=None):
     """Privacy-preserving observability: records latency, status, and token footprint without logging private payloads."""
@@ -149,16 +164,30 @@ WORKFLOW_SPECS={
 def list_workflows():
     return [{'workflow_id':k,**v} for k,v in WORKFLOW_SPECS.items()]
 
-def _save_run(run_id, workflow_id, status, current_step, completed_steps, pending_approval, inputs_meta, checkpoint, proposed_action, acceptance_passed):
+def _save_run(run_id, workflow_id, status, current_step, completed_steps, pending_approval, inputs_meta, checkpoint, proposed_action, acceptance_passed, immutable_params=None, input_hash=None, workflow_version='1'):
     stamp=now()
     with db('ops') as c:
         schema(c)
-        old=c.execute('SELECT created_at, retry_count FROM workflow_runs WHERE run_id=?',(run_id,)).fetchone()
+        old=c.execute('SELECT created_at, retry_count, immutable_params_json, input_hash, workflow_version FROM workflow_runs WHERE run_id=?',(run_id,)).fetchone()
         created=old['created_at'] if old else stamp
         retries=old['retry_count'] if old else 0
-        c.execute('''INSERT OR REPLACE INTO workflow_runs
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-            (run_id,workflow_id,status,current_step,json.dumps(completed_steps),1 if pending_approval else 0,retries,json.dumps(inputs_meta,ensure_ascii=False),json.dumps(checkpoint,ensure_ascii=False,default=str),json.dumps(proposed_action,ensure_ascii=False) if proposed_action else None,1 if acceptance_passed else 0,created,stamp))
+        imm_json=old['immutable_params_json'] if old else json.dumps(immutable_params if immutable_params is not None else (inputs_meta.get('immutable_params') if isinstance(inputs_meta, dict) and 'immutable_params' in inputs_meta else {}), ensure_ascii=False, sort_keys=True)
+        in_h=old['input_hash'] if old else (input_hash if input_hash is not None else (inputs_meta.get('input_hash','') if isinstance(inputs_meta, dict) else ''))
+        wf_ver=old['workflow_version'] if old else str(workflow_version or '1')
+        c.execute('''INSERT INTO workflow_runs
+            (run_id,workflow_id,status,current_step,completed_steps,pending_approval,retry_count,inputs_meta,checkpoint_json,proposed_action_json,acceptance_passed,created_at,updated_at,immutable_params_json,input_hash,workflow_version)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(run_id) DO UPDATE SET
+                status=excluded.status,
+                current_step=excluded.current_step,
+                completed_steps=excluded.completed_steps,
+                pending_approval=excluded.pending_approval,
+                inputs_meta=excluded.inputs_meta,
+                checkpoint_json=excluded.checkpoint_json,
+                proposed_action_json=excluded.proposed_action_json,
+                acceptance_passed=excluded.acceptance_passed,
+                updated_at=excluded.updated_at''',
+            (run_id,workflow_id,status,current_step,json.dumps(completed_steps),1 if pending_approval else 0,retries,json.dumps(inputs_meta,ensure_ascii=False),json.dumps(checkpoint,ensure_ascii=False,default=str),json.dumps(proposed_action,ensure_ascii=False) if proposed_action else None,1 if acceptance_passed else 0,created,stamp,imm_json,in_h,wf_ver))
 
 def _param_hash(obj):
     return hashlib.sha256(json.dumps(obj or {}, sort_keys=True, default=str).encode('utf-8')).hexdigest()[:16]
@@ -178,10 +207,11 @@ def run_workflow(workflow_id, params=None, resume_run_id=None):
         if prior.get('status')=='not_found': raise ValueError('resume_run_id not found')
         if prior.get('workflow_id')!=workflow_id: raise ValueError('workflow_id mismatch on resume')
         meta=dict(prior.get('inputs_meta') or {})
-        locked_p=meta.get('immutable_params')
+        locked_p=json.loads(prior['immutable_params_json']) if prior.get('immutable_params_json') is not None else meta.get('immutable_params')
+        locked_h=prior.get('input_hash') or meta.get('input_hash')
         if locked_p is None:
             raise ValueError('workflow run lacks immutable_params; cannot safely resume')
-        if raw_p is not None and _param_hash(raw_p)!=meta.get('input_hash'):
+        if raw_p is not None and _param_hash(raw_p)!=locked_h:
             raise ValueError('cannot resume workflow with modified parameters; start a new run')
         p=dict(locked_p)
         run_id=resume_run_id
@@ -195,7 +225,7 @@ def run_workflow(workflow_id, params=None, resume_run_id=None):
         done=['intake_validate']
         ckpt={}
         meta={'workflow':workflow_id,'immutable_params':p,'input_hash':_param_hash(p)}
-        _save_run(run_id, workflow_id, 'running', 'intake_validate', done, False, meta, ckpt, None, False)
+        _save_run(run_id, workflow_id, 'running', 'intake_validate', done, False, meta, ckpt, None, False, immutable_params=p, input_hash=_param_hash(p), workflow_version='1')
 
     def _ckpt(step_name, key=None, val=None):
         if key is not None: ckpt[key]=val
@@ -455,14 +485,33 @@ def list_workflow_runs(status=None, limit=20):
     return out
 
 def approve_workflow(run_id, operator_note=''):
-    """Human-in-the-Loop Resume-After-Approval: atomic state claim, TTL, idempotency, positions/policy binding, and live gate re-validation."""
+    """Human-in-the-Loop Resume-After-Approval: crash-recoverable approval_intents, TTL, idempotency, positions/policy binding, and live gate re-validation."""
     state=get_workflow_run(run_id)
     if state.get('status')=='not_found': raise ValueError('workflow run not found')
     checkpoint=dict(state['checkpoint'])
+    rec_mid=None; rec_note=''
+    with db('ops') as c:
+        schema(c)
+        intent=c.execute('SELECT * FROM approval_intents WHERE run_id=?',(str(run_id),)).fetchone()
+        if intent:
+            if intent['decision']=='approved':
+                return {'run_id':run_id,'status':'completed','idempotent':True,'committed_memory_id':intent['memory_id'],'orders':'disabled'}
+            if intent['decision']=='rejected':
+                raise ValueError('workflow run already rejected')
+            if intent['decision']=='approving' and intent['memory_id'] is not None:
+                rec_mid=intent['memory_id']; rec_note=intent['operator_note']
+                c.execute("UPDATE approval_intents SET decision='approved', updated_at=? WHERE run_id=?",(now(), str(run_id)))
+    if rec_mid is not None:
+        done=list(state['completed_steps'])
+        for s_name in ('human_approved','committed_to_memory'):
+            if s_name not in done: done.append(s_name)
+        checkpoint['approval_resolution']={'decision':'approved','memory_id':rec_mid,'operator_note':rec_note,'resolved_at':now(),'recovered_from_crash':True,'orders':'disabled'}
+        _save_run(run_id, state['workflow_id'], 'completed', 'committed_to_memory', done, False, state['inputs_meta'], checkpoint, state.get('proposed_action'), True)
+        return {'run_id':run_id,'status':'completed','recovered':True,'committed_memory_id':rec_mid,'orders':'disabled'}
     if state['status']=='completed' and (checkpoint.get('approval_resolution') or {}).get('decision')=='approved':
         res=checkpoint['approval_resolution']
         return {'run_id':run_id,'status':'completed','idempotent':True,'committed_memory_id':res.get('memory_id'),'orders':'disabled'}
-    if state['status']!='awaiting_approval' or not state.get('proposed_action'):
+    if state['status'] not in {'awaiting_approval','approving'} or not state.get('proposed_action'):
         raise ValueError('workflow run is not awaiting approval')
     prop=state['proposed_action']
 
@@ -499,17 +548,17 @@ def approve_workflow(run_id, operator_note=''):
             except ValueError as ve:
                 if 'shifted >5%' in str(ve): raise
 
-    # Atomic SQLite state claim to prevent concurrent double-approval
+    # Atomic intent claim via approval_intents + workflow_runs
+    stamp=now()
     with db('ops') as c:
         schema(c)
-        cur=c.execute("UPDATE workflow_runs SET status='approving', updated_at=? WHERE run_id=? AND status='awaiting_approval'",(now(), str(run_id)))
-        if cur.rowcount==0:
-            latest=get_workflow_run(run_id)
-            l_ckpt=latest.get('checkpoint') or {}
-            if latest.get('status')=='completed' and (l_ckpt.get('approval_resolution') or {}).get('decision')=='approved':
-                res=l_ckpt['approval_resolution']
-                return {'run_id':run_id,'status':'completed','idempotent':True,'committed_memory_id':res.get('memory_id'),'orders':'disabled'}
-            raise ValueError('workflow run already claimed or no longer awaiting approval')
+        c.execute("INSERT OR IGNORE INTO approval_intents(run_id,decision,operator_note,memory_id,created_at,updated_at) VALUES(?,?,?,?,?,?)",(str(run_id),'approving',operator_note,None,stamp,stamp))
+        intent=c.execute('SELECT * FROM approval_intents WHERE run_id=?',(str(run_id),)).fetchone()
+        if intent['decision']=='approved':
+            return {'run_id':run_id,'status':'completed','idempotent':True,'committed_memory_id':intent['memory_id'],'orders':'disabled'}
+        if intent['decision']=='rejected':
+            raise ValueError('workflow run already rejected')
+        c.execute("UPDATE workflow_runs SET status='approving', updated_at=? WHERE run_id=? AND status='awaiting_approval'",(stamp, str(run_id)))
 
     memory_id=None
     try:
@@ -522,6 +571,8 @@ def approve_workflow(run_id, operator_note=''):
         elif prop['kind']=='save_lesson':
             detail=prop['detail']+(' | Operator note: '+operator_note if operator_note else '')
             memory_id=knowledge.save_lesson(prop['lesson_kind'], prop['title'], detail, 'workflow_human_approved', symbol=prop.get('symbol') or '', action_rule=prop.get('action_rule') or '')
+        with db('ops') as c:
+            c.execute("UPDATE approval_intents SET memory_id=?, decision='approved', updated_at=? WHERE run_id=?",(memory_id, now(), str(run_id)))
     except Exception:
         with db('ops') as c:
             c.execute("UPDATE workflow_runs SET status='awaiting_approval', updated_at=? WHERE run_id=? AND status='approving'",(now(), str(run_id)))
@@ -532,9 +583,17 @@ def approve_workflow(run_id, operator_note=''):
     return {'run_id':run_id,'status':'completed','committed_memory_id':memory_id,'orders':'disabled'}
 
 def reject_workflow(run_id, reason='rejected_by_operator'):
-    """Human-in-the-Loop Rejection: records rejection without modifying memory or ledger."""
+    """Human-in-the-Loop Rejection: atomically claims approval_intent without modifying memory or ledger."""
     state=get_workflow_run(run_id)
     if state.get('status')=='not_found': raise ValueError('workflow run not found')
+    stamp=now()
+    with db('ops') as c:
+        schema(c)
+        cur=c.execute("INSERT OR IGNORE INTO approval_intents(run_id,decision,operator_note,memory_id,created_at,updated_at) VALUES(?,?,?,?,?,?)",(str(run_id),'rejected',reason,None,stamp,stamp))
+        if cur.rowcount==0:
+            intent=c.execute('SELECT decision FROM approval_intents WHERE run_id=?',(str(run_id),)).fetchone()
+            if intent and intent['decision']!='rejected':
+                raise ValueError(f"cannot reject workflow run with existing approval intent={intent['decision']}")
     if state['status']!='awaiting_approval': raise ValueError('workflow run is not awaiting approval')
     done=list(state['completed_steps'])+['human_rejected']
     checkpoint=dict(state['checkpoint'])
@@ -543,7 +602,19 @@ def reject_workflow(run_id, reason='rejected_by_operator'):
     return {'run_id':run_id,'status':'rejected','reason':reason}
 
 def run_eval_benchmark():
-    """Deterministic Evaluation Harness: runs synthetic accounting, valuation, risk, DLP security, and workflow state-machine regression benchmarks."""
+    """Subprocess-isolated Deterministic Evaluation Harness: never mutates caller os.environ or loaded modules."""
+    out=subprocess.check_output(
+        [sys.executable, '-c', 'import json; from personal_agent import ops; print(json.dumps(ops._run_eval_in_process()))'],
+        cwd=str(ROOT), text=True
+    )
+    res=json.loads(out.strip().splitlines()[-1])
+    with db('ops') as c:
+        schema(c)
+        c.execute('INSERT OR REPLACE INTO eval_runs VALUES(?,?,?,?,?,?)',(res['eval_id'],res['passed'],res['total'],res['score_pct'],json.dumps(res['cases'],ensure_ascii=False),now()))
+    return res
+
+def _run_eval_in_process():
+    """Inner eval suite executed inside an isolated subprocess."""
     prev_home=os.environ.get('PERSONAL_AGENT_HOME')
     prev_cfg=os.environ.get('PERSONAL_AGENT_CONFIG')
     cases=[]
