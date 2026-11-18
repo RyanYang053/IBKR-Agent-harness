@@ -1,5 +1,5 @@
 import argparse,json,sys
-from . import decision,finance,knowledge,market,ops,report
+from . import decision,finance,knowledge,market,ops,quant,report
 from .core import config
 
 def main():
@@ -15,6 +15,12 @@ def main():
     s.add_parser('brief')
     s.add_parser('habits')
     s.add_parser('factor-risk')
+    s.add_parser('policy')
+    alc=s.add_parser('allocate'); alc.add_argument('amount_base'); alc.add_argument('--candidates',default='')
+    opt=s.add_parser('options'); opt.add_argument('strategy',choices=['covered_call','leaps_call','long_call','long_put']); opt.add_argument('spot'); opt.add_argument('strike'); opt.add_argument('days',type=int); opt.add_argument('--premium',default=''); opt.add_argument('--vol',default='0.35'); opt.add_argument('--cost-basis',default='')
+    bt=s.add_parser('backtest'); bt.add_argument('--symbol',default='QQQ'); bt.add_argument('--capital',default='10000')
+    th=s.add_parser('upsert-thesis'); th.add_argument('symbol'); th.add_argument('--pillars',required=True); th.add_argument('--kpis',default=''); th.add_argument('--catalysts',default=''); th.add_argument('--breakers',required=True)
+    ex=s.add_parser('expectation'); ex.add_argument('symbol'); ex.add_argument('period'); ex.add_argument('--basis',default='management_guidance',choices=['management_guidance','internal_model','licensed_consensus']); ex.add_argument('--exp-rev',default=''); ex.add_argument('--exp-eps',default=''); ex.add_argument('--act-rev',default=''); ex.add_argument('--act-eps',default='')
     at=s.add_parser('attribution'); at.add_argument('--days',type=int,default=90); at.add_argument('--account',default='')
     fd=s.add_parser('filing-delta'); fd.add_argument('symbol'); fd.add_argument('--sync',action='store_true')
     s.add_parser('health')
@@ -46,6 +52,14 @@ def main():
         elif a.command=='brief': result=report.daily_brief()
         elif a.command=='habits': result=decision.trading_habits()
         elif a.command=='factor-risk': result=decision.portfolio_factor_risk()
+        elif a.command=='policy': result=quant.policy_compliance()
+        elif a.command=='allocate':
+            cands=[x.strip() for x in a.candidates.split(',') if x.strip()] if a.candidates.strip() else None
+            result=quant.allocate_incremental_capital(a.amount_base, cands)
+        elif a.command=='options': result=quant.analyze_option_strategy(a.strategy, a.spot, a.strike, a.days, a.premium, a.vol, '0.04', a.cost_basis)
+        elif a.command=='backtest': result=quant.backtest_strategies(a.symbol, a.capital)
+        elif a.command=='upsert-thesis': result=quant.upsert_living_thesis(a.symbol, a.pillars, a.kpis, a.catalysts, a.breakers)
+        elif a.command=='expectation': result=quant.record_earnings_expectation(a.symbol, a.period, a.basis, a.exp_rev or None, a.exp_eps or None, act_revenue=a.act_rev or None, act_eps=a.act_eps or None)
         elif a.command=='attribution': result=decision.counterfactual_attribution(a.days, a.account or None)
         elif a.command=='filing-delta':
             if a.sync:

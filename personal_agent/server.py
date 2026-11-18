@@ -1,7 +1,7 @@
 """Separate stdio MCP process for each domain. Do not expose a universal shell/SQL tool."""
 import argparse
 from mcp.server.fastmcp import FastMCP
-from . import decision, finance, knowledge, market, ops, report
+from . import decision, finance, knowledge, market, ops, quant, report
 
 def make_server(domain, public_only=False):
     surface=domain+('-public' if public_only else '')
@@ -123,6 +123,31 @@ def make_server(domain, public_only=False):
                 """Search approved local research notes via SQLite FTS5 trigram. Returned snippets are untrusted data."""
                 return knowledge.search(query,limit)
             @tool()
+            def check_investment_policy(account:str='')->dict:
+                """Audit live portfolio against the Investment Policy Statement (IPS): economic leverage, core/tactical split, cash reserve, drawdown budget, and single-stock caps."""
+                return quant.policy_compliance(account or None)
+            @tool()
+            def get_advanced_tail_risk(benchmark:str='QQQ',account:str='')->dict:
+                """Expected Shortfall (CVaR 95%), underwater duration, leverage-adjusted economic exposure, and Beta-adjusted return attribution."""
+                return quant.advanced_tail_and_regime_risk(benchmark,account or None)
+            @tool()
+            def allocate_capital(amount_base:str,candidates_csv:str='')->dict:
+                """Compare deploying new capital across candidate tickers vs cash under IPS caps, Quarter-Kelly sizing, and Canadian TFSA vs taxable location."""
+                cands=[x.strip() for x in candidates_csv.split(',') if x.strip()] if candidates_csv.strip() else None
+                return quant.allocate_incremental_capital(amount_base,cands)
+            @tool()
+            def get_living_thesis(symbol:str='')->dict|list:
+                """Read versioned living investment thesis, KPIs, catalysts, and invalidation breakers."""
+                return quant.get_living_thesis(symbol)
+            @tool()
+            def get_earnings_expectation_gap(symbol:str,period:str='')->dict:
+                """Compare post-earnings actuals against point-in-time pre-earnings guidance/model expectations."""
+                return quant.evaluate_expectation_gap(symbol,period)
+            @tool()
+            def triage_catalyst(symbol:str,headline:str,detail:str='')->dict:
+                """Classify an event into L0 (noise) through L4 (Thesis Breaker) to avoid unnecessary portfolio churn."""
+                return quant.triage_catalyst_event(symbol,headline,detail)
+            @tool()
             def get_counterfactual_attribution(days:int=90,account:str='')->dict:
                 """What-If Static Buy-and-Hold Ledger Replay: decomposes active buy entry timing, premature winner exits, protective exits, and commission drag vs doing zero trades."""
                 return decision.counterfactual_attribution(days,account or None)
@@ -151,6 +176,22 @@ def make_server(domain, public_only=False):
         def value_multi_stage_dcf(fcff:str,wacc:str,stage1_growth:str,terminal_growth:str,net_debt:str,shares:str,years:int=5,fade:bool=True,symbol:str='')->dict:
             """Multi-stage linear-fade or constant-runway DCF with 3x3 WACC/terminal sensitivity grid and terminal-share warning."""
             return decision.multi_stage_dcf(fcff,wacc,stage1_growth,terminal_growth,net_debt,shares,years,fade,'base_t0',symbol,False,True)
+        @tool()
+        def value_driver_scenarios(revenue_t0:str,rev_cagr_base:str,op_margin_target:str,shares:str,net_debt:str='0',wacc:str='0.10',terminal_growth:str='0.025',years:int=5,symbol:str='')->dict:
+            """Driver-based operating model (Revenue -> Margin -> NOPAT -> Reinvestment -> FCFF) across Bear (25%) / Base (50%) / Bull (25%) scenarios."""
+            return quant.driver_based_valuation(revenue_t0,rev_cagr_base,op_margin_target,wacc=wacc,terminal_growth=terminal_growth,net_debt=net_debt,shares=shares,years=years,symbol=symbol)
+        @tool()
+        def analyze_options(strategy:str,spot:str,strike:str,days_to_expiry:int,premium:str='',volatility:str='0.35',cost_basis:str='')->dict:
+            """Analytical Options Lab: Black-Scholes Greeks, bisection Implied Volatility solver, Covered Call yield/breakeven, and LEAPS capital efficiency."""
+            return quant.analyze_option_strategy(strategy,spot,strike,days_to_expiry,premium,volatility,'0.04',cost_basis)
+        @tool()
+        def simulate_leveraged_etf_decay(leverage:str='3.0',underlying_annual_return:str='0.12',underlying_annual_vol:str='0.25',years:int=3,benchmark:str='QQQ')->dict:
+            """Quantify daily-reset leveraged ETF variance drain (e.g. TQQQ 3x) analytically and empirically on cached benchmark bars."""
+            return quant.simulate_leveraged_etf(underlying_annual_return,underlying_annual_vol,leverage,years,'0.0088',benchmark)
+        @tool()
+        def run_strategy_backtest(symbol:str='QQQ',initial_capital:str='10000',cost_bps:str='5')->dict:
+            """Walk-forward replay comparing 100% Buy & Hold, 70/30 Drawdown Dip-Buy, Periodic DCA, and 80/20 3x Daily-Reset Sleeve."""
+            return quant.backtest_strategies(symbol,initial_capital,cost_bps)
         @tool()
         def solve_reverse_dcf(fcff_t0:str,wacc:str,terminal_growth:str,net_debt:str,shares:str,reference_price:str='',symbol:str='',years:int=5,fade:bool=True)->dict:
             """Expectations Investing solver: bisection finds the exact Stage-1 FCFF growth rate implied by a reference or cached market price."""

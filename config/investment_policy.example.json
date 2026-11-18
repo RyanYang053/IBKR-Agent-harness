@@ -1,0 +1,38 @@
+{
+  "return_objective_annual": 0.15,
+  "investment_horizon_years": 10,
+  "core_benchmark": "QQQ",
+  "core_symbols": ["QQQ", "SPY", "VOO", "VTI", "VFV.TO", "XEQT.TO"],
+  "core_min_weight": 0.35,
+  "tactical_max_weight": 0.55,
+  "min_cash_reserve": 0.05,
+  "max_drawdown_budget": -0.25,
+  "max_economic_leverage": 1.20,
+  "max_single_stock_weight": 0.15,
+  "rebalance_drift_band": 0.05,
+  "kelly_fraction": 0.25,
+  "leveraged_etf_multipliers": {
+    "TQQQ": 3.0,
+    "UPRO": 3.0,
+    "SOXL": 3.0,
+    "FNGU": 3.0,
+    "QLD": 2.0,
+    "SSO": 2.0,
+    "USD": 2.0,
+    "SQQQ": -3.0,
+    "SDS": -2.0,
+    "SH": -1.0
+  },
+  "account_constraints": {
+    "tfsa": {
+      "allow_margin": false,
+      "allow_short_options": false,
+      "preferred_assets": "high-growth low-dividend compounders and core index ETFs",
+      "avoid": "high-yield US dividend stocks (unrecoverable 15% IRS withholding) and speculative loss-prone trades (non-deductible losses)"
+    },
+    "taxable": {
+      "allow_margin": false,
+      "preferred_assets": "tactical positions, US dividend payers (foreign tax credit eligible), and tax-loss harvestable sleeves"
+    }
+  }
+}

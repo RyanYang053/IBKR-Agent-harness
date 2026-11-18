@@ -1,7 +1,7 @@
 [project]
 name = "ibkr-agent-harness"
-version = "0.2.0"
-description = "Local-first quantitative portfolio intelligence, stateful workflow harness, and privacy-segregated MCP control plane for Interactive Brokers."
+version = "0.3.0"
+description = "Personal Investment Operating System & Stateful Agent Harness for Interactive Brokers: IPS mandate engine, Multi-Stage/Driver/Reverse DCF, MCTR covariance & CVaR risk, SEC 10-K forensics, Options/Strategy Labs, and DLP-isolated MCP."
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.11"

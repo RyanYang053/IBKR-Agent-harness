@@ -47,6 +47,10 @@ def finance_checks(home):
     brief = report.daily_brief()
     wf_cf = ops.run_workflow('counterfactual_decision_attribution', {'days': 90})
     check('counterfactual attribution workflow', wf_cf['status'] == 'completed' and 'wealth_comparison' in wf_cf['result'])
+    from streamlit.testing.v1 import AppTest
+    at = AppTest.from_file(str(ROOT / 'dashboard.py'), default_timeout=30)
+    at.run()
+    check('dashboard 9-tab headless render', len(at.exception) == 0 and len(at.tabs) == 9, at.exception)
     check('trading habits telemetry', 'sizing_and_concentration' in habits and 'execution_and_turnover' in habits)
     check('compact daily brief', brief['status'] in {'ok', 'partial_or_stale'} and len(json.dumps(brief)) < 5000)
     rate = finance.xirr([(date(2023, 1, 1), Decimal('-1000')), (date(2024, 1, 1), Decimal('1100'))])
@@ -143,6 +147,14 @@ def knowledge_checks(home):
     market.save_filing_section('QQQ', '10-K', '2026-02-01', 'acc-2', 'risk_factors', 'Item 1A. Risk Factors\nSupply chain constraints have experienced severe disruption and resulted in order cancellations.\nNew antitrust investigation and subpoena disclosed this year.')
     wf_sec = ops.run_workflow('sec_filing_delta_red_flag', {'symbol': 'QQQ', 'stage_alert': True})
     check('sec filing delta workflow', wf_sec['status'] == 'awaiting_approval' and len(wf_sec['result']['red_flags']) >= 2)
+    from personal_agent import quant
+    th = quant.upsert_living_thesis('QQQ', 'Core index compounding;Secular tech margins', 'FCF margin;Cloud growth', 'Quarterly rebalance', 'margin collapse below 15%')
+    triage = quant.triage_catalyst_event('QQQ', 'Company reports margin collapse below 15% and guidance cut')
+    check('living thesis and L4 triage', th['version'] == 1 and triage['materiality_level'] == 'L4_decision_alert')
+    exp_gap = quant.record_earnings_expectation('QQQ', '2026Q4', 'management_guidance', exp_revenue=100, exp_eps=2.0, act_revenue=108, act_eps=2.25)
+    check('earnings expectation gap', exp_gap['verdict'] == 'positive_beat_and_raise' and exp_gap['revenue_surprise_pct'] == 0.08)
+    ic_wf = ops.run_workflow('investment_committee_memo', {'symbol': 'QQQ', 'amount_base': '250', 'revenue_t0': '1000', 'shares': '100'})
+    check('investment committee 8-step workflow', ic_wf['status'] == 'awaiting_approval' and len(ic_wf['completed_steps']) == 7)
     ev = ops.run_eval_benchmark()
     check('evaluation harness 100pct', ev['passed'] == ev['total'] and ev['score_pct'] == 100.0, ev)
 

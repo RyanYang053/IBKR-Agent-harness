@@ -3,7 +3,7 @@ from decimal import Decimal
 import functools, json, os, tempfile, time, uuid
 from pathlib import Path
 from .core import ROOT, bounded, db, now
-from . import decision, finance, knowledge, market, report
+from . import decision, finance, knowledge, market, quant, report
 
 def schema(c):
     c.executescript('''
@@ -134,6 +134,14 @@ WORKFLOW_SPECS={
         'approval_gate':True,
         'steps':['intake_validate','reconstruct_window_executions','mark_open_and_closed_positions','decompose_buy_vs_sell_alpha_and_friction','rank_best_and_costliest_decisions','stage_habit_lesson_or_deliver'],
         'acceptance_criteria':['Unpriced closed contracts are isolated rather than guessed','Actual ending NAV minus net active alpha equals counterfactual static baseline','Any proposed behavioral rule pauses at awaiting_approval']
+    },
+    'investment_committee_memo':{
+        'objective':'Run the 8-section Should-I-Invest? Investment Committee synthesis: Research Case, Market Expectations, Driver/Reverse Valuation, Red Team, Portfolio & Policy Impact, Alternatives vs QQQ/Cash, Capital Allocation, and Decision Memo halting for human approval.',
+        'pattern':'Single-Orchestrator 8-Stage Committee Synthesis + Mandatory HITL Gate',
+        'trigger':'New investment candidate, earnings re-underwriting, or major capital deployment',
+        'approval_gate':True,
+        'steps':['1_research_and_edgar_forensics','2_market_expectations_and_gap','3_driver_and_reverse_valuation','4_red_team_and_mistake_guardrails','5_portfolio_and_policy_impact','6_opportunity_cost_vs_qqq_and_cash','7_sizing_and_account_location','8_awaiting_human_committee_approval'],
+        'acceptance_criteria':['Policy mandate compliance is checked','Opportunity cost against core benchmark and cash is quantified','Decision memo pauses at awaiting_approval before any commitment']
     }
 }
 
@@ -233,12 +241,12 @@ def run_workflow(workflow_id, params=None):
             'thesis':thesis_text or f'{act} {sym} pre-trade gated plan',
             'falsifier':falsifier,
             'confidence':conf,
-            'gate_verdict':gate['verdict'],
+            'gate_verdict':gate.get('verdict') or gate.get('status','blocked'),
             'orders':'disabled_manual_broker_execution_only'
         }
         checkpoint={'pre_trade_gate':gate,'portfolio_stress_context':{'pnl_impact_base':stress.get('portfolio_pnl_impact_base'),'nav_impact_pct':stress.get('portfolio_nav_impact_pct')}}
         status='awaiting_approval'; cur_step='awaiting_human_approval'
-        _save_run(run_id, workflow_id, status, cur_step, done, True, {'symbol':sym,'action':act,'account':acct}, checkpoint, proposed, gate['verdict']!='blocked_stale_ledger')
+        _save_run(run_id, workflow_id, status, cur_step, done, True, {'symbol':sym,'action':act,'account':acct}, checkpoint, proposed, (gate.get('verdict') or gate.get('status')) not in {'blocked','blocked_stale_ledger'})
         record_span('workflow', workflow_id, 'ok', (time.perf_counter()-t0)*1000.0, len(json.dumps(checkpoint))//4)
         return {'run_id':run_id,'workflow_id':workflow_id,'status':status,'current_step':cur_step,'completed_steps':done,'pending_approval':True,'proposed_approval':proposed,'result':checkpoint}
 
@@ -303,6 +311,51 @@ def run_workflow(workflow_id, params=None):
         _save_run(run_id, workflow_id, status, cur_step, done, pending, {'days':days,'account':acct}, attrib, proposed, attrib.get('status') in {'ok','partial_or_stale'})
         record_span('workflow', workflow_id, 'ok', (time.perf_counter()-t0)*1000.0, len(json.dumps(attrib))//4)
         return {'run_id':run_id,'workflow_id':workflow_id,'status':status,'current_step':cur_step,'completed_steps':done,'pending_approval':pending,'proposed_approval':proposed,'result':attrib}
+
+    if workflow_id=='investment_committee_memo':
+        sym=str(p.get('symbol') or '').strip().upper()
+        amt=str(p.get('amount_base') or '2500').strip()
+        act=str(p.get('action') or 'BUY').strip().upper()
+        acct=str(p.get('account') or 'taxable').strip()
+        if not sym: raise ValueError('symbol is required for investment_committee_memo')
+        s1_research={'stock_brief':decision.stock_brief(sym),'filing_forensics':decision.filing_red_flag_audit(sym, include_private=True),'living_thesis':quant.get_living_thesis(sym)}
+        done=['1_research_and_edgar_forensics']
+        s2_expect=quant.evaluate_expectation_gap(sym)
+        done.append('2_market_expectations_and_gap')
+        s3_val=None
+        if p.get('revenue_t0') and p.get('shares'):
+            s3_val=quant.driver_based_valuation(p['revenue_t0'], p.get('rev_cagr_base','0.15'), p.get('op_margin_target','0.25'), wacc=p.get('wacc','0.10'), terminal_growth=p.get('terminal_growth','0.025'), net_debt=p.get('net_debt','0'), shares=p['shares'], symbol=sym)
+        done.append('3_driver_and_reverse_valuation')
+        s4_gate=decision.evaluate_trade_gate(sym, act, amt, acct)
+        done.append('4_red_team_and_mistake_guardrails')
+        s5_policy=quant.policy_compliance()
+        done.append('5_portfolio_and_policy_impact')
+        s6_alloc=quant.allocate_incremental_capital(amt, candidates=[sym, quant.load_policy().get('core_benchmark','QQQ')])
+        done.extend(['6_opportunity_cost_vs_qqq_and_cash','7_sizing_and_account_location'])
+        memo={
+            '1_research_case':s1_research,
+            '2_market_expectations':s2_expect,
+            '3_valuation_scenarios':s3_val,
+            '4_red_team_and_gate':s4_gate,
+            '5_policy_compliance':s5_policy.get('exposure_summary'),
+            '6_and_7_alternatives_and_allocation':s6_alloc
+        }
+        g_verd=s4_gate.get('verdict') or s4_gate.get('status','blocked')
+        proposed={
+            'kind':'approved_trade_plan',
+            'symbol':sym,
+            'action':act,
+            'amount_base':amt,
+            'account':acct,
+            'thesis':str(p.get('thesis') or f'IC Memo {act} {sym}'),
+            'falsifier':str(p.get('falsifier') or ''),
+            'confidence':str(p.get('confidence') or ''),
+            'gate_verdict':g_verd,
+            'orders':'disabled_manual_broker_execution_only'
+        }
+        _save_run(run_id, workflow_id, 'awaiting_approval', '8_awaiting_human_committee_approval', done, True, {'symbol':sym,'action':act,'amount_base':amt}, memo, proposed, g_verd not in {'blocked','blocked_stale_ledger'})
+        record_span('workflow', workflow_id, 'ok', (time.perf_counter()-t0)*1000.0, len(json.dumps(memo))//4)
+        return {'run_id':run_id,'workflow_id':workflow_id,'status':'awaiting_approval','current_step':'8_awaiting_human_committee_approval','completed_steps':done,'pending_approval':True,'proposed_approval':proposed,'result':memo}
 
 def get_workflow_run(run_id):
     with db('ops') as c:
@@ -416,7 +469,14 @@ def run_eval_benchmark():
             cf=decision.counterfactual_attribution(days=90)
             wc=cf.get('wealth_comparison') or {}
             ident_ok=(Decimal(wc['actual_ending_nav_base'])-Decimal(wc['net_active_trading_alpha_base']))==Decimal(wc['counterfactual_static_buy_and_hold_nav_base'])
-            record_case('counterfactual_buy_and_hold_wealth_identity', ident_ok, wc.get('verdict'))
+            record_case('counterfactual_buy_and_hold_wealth_identity', ident_ok, cf.get('verdict'))
+            drv=quant.driver_based_valuation('1000','0.15','0.25',shares='100')
+            record_case('driver_based_3scenario_valuation', drv['scenarios']['bear']['per_share']<drv['probability_weighted_per_share']<drv['scenarios']['bull']['per_share'], drv['probability_weighted_per_share'])
+            bsm_ref=quant.analyze_option_strategy('covered_call','100','110',45,volatility='0.30',cost_basis='95')
+            iv_inv=quant.analyze_option_strategy('covered_call','100','110',45,premium=str(bsm_ref['option_premium_per_share']),cost_basis='95')
+            record_case('black_scholes_iv_inversion_and_covered_call', abs(iv_inv['solved_iv_from_premium']-0.30)<0.003, iv_inv['solved_iv_from_premium'])
+            lev_sim=quant.simulate_leveraged_etf('0.10','0.30','3.0',years=3)
+            record_case('leveraged_etf_variance_drain_decomposition', lev_sim['analytical_continuous_approx']['annual_volatility_variance_drain']==0.27, lev_sim['analytical_continuous_approx']['annual_volatility_variance_drain'])
     finally:
         if prev_home is None: os.environ.pop('PERSONAL_AGENT_HOME', None)
         else: os.environ['PERSONAL_AGENT_HOME']=prev_home
