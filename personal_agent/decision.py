@@ -916,51 +916,74 @@ def counterfactual_attribution(days=90, account=None):
     }
 
 def compute_canadian_acb(symbol=None, account=None):
-    """v0.4.1 R04: Pooled Adjusted Cost Base (ACB) by identical property from trade/corporate_action records with transaction FX and commissions."""
+    """v0.4.1 R04: Chronological pooled Adjusted Cost Base (ACB) with transaction FX fail-closed, split corporate actions, and oversell detection."""
     sym_filter=str(symbol or '').strip().upper() or None
     cfg=config().get('finance',{})
     base_cur=str(cfg.get('base_currency') or 'CAD').upper()
     with db('finance') as c:
         finance_schema(c)
         q="SELECT account, category, record_id, payload FROM records WHERE category IN ('trade','corporate_action')"+(" AND account=?" if account else "")+" ORDER BY rowid ASC"
-        rows=c.execute(q, (account,) if account else ()).fetchall()
-    pools={}
-    realized=[]
-    for r in rows:
+        raw_rows=c.execute(q, (account,) if account else ()).fetchall()
+    parsed=[]
+    for r in raw_rows:
         f=json.loads(r['payload'])
+        raw_d=f.get('tradeDate') or f.get('reportDate') or f.get('dateTime') or '1900-01-01'
+        try: d_iso=day(raw_d)
+        except Exception: d_iso='1900-01-01'
+        parsed.append((d_iso, 0 if r['category']=='corporate_action' else 1, r['account'], r['category'], r['record_id'], f))
+    parsed.sort(key=lambda x:(x[0], x[1], x[4]))
+    pools={}; realized=[]; warnings=[]
+    for d_iso, _, acct, cat, rid, f in parsed:
         sym=str(f.get('symbol') or '').strip().upper()
         if not sym or (sym_filter and sym!=sym_filter): continue
         if str(f.get('assetCategory') or 'STK').upper()=='CASH': continue
-        bucket=_tax_bucket(r['account'])
+        bucket=_tax_bucket(acct)
         key=(bucket, sym)
         pool=pools.setdefault(key, {'shares':Decimal(0),'total_acb_base':Decimal(0)})
-        if r['category']=='trade':
-            side=str(f.get('buySell') or '').strip().upper()
-            qty=abs(dec(f.get('quantity') or '0'))
-            if qty==0 or f.get('tradePrice') in (None,''): continue
-            cur=str(f.get('currency') or base_cur).upper()
-            fx=Decimal('1') if cur==base_cur else dec(f.get('fxRateToBase') or '1')
-            mult=dec(f.get('multiplier') or '1')
-            gross_base=qty*dec(f['tradePrice'])*mult*fx
-            comm_base=abs(dec(f.get('ibCommission') or '0'))*(Decimal('1') if str(f.get('ibCommissionCurrency') or cur).upper()==base_cur else fx)
-            if side=='BUY':
-                pool['shares']+=qty
-                pool['total_acb_base']+=(gross_base+comm_base)
-            elif side=='SELL' and pool['shares']>0:
-                sell_qty=min(qty, pool['shares'])
-                acb_per_sh=pool['total_acb_base']/pool['shares']
-                acb_relieved=acb_per_sh*sell_qty
-                proceeds=gross_base-comm_base
-                gain=proceeds-acb_relieved
-                pool['shares']-=sell_qty
-                pool['total_acb_base']-=acb_relieved
-                realized.append({'tax_bucket':bucket,'symbol':sym,'sold_qty':str(sell_qty),'proceeds_base':str(round(proceeds,2)),'acb_relieved_base':str(round(acb_relieved,2)),'realized_gain_base':str(round(gain,2))})
+        if cat=='corporate_action':
+            ratio_raw=f.get('splitRatio') or f.get('ratio')
+            if ratio_raw not in (None,'') and dec(ratio_raw)>0 and pool['shares']>0:
+                pool['shares']=pool['shares']*dec(ratio_raw)
+            continue
+        side=str(f.get('buySell') or '').strip().upper()
+        qty=abs(dec(f.get('quantity') or '0'))
+        if qty==0 or f.get('tradePrice') in (None,''): continue
+        cur=str(f.get('currency') or base_cur).upper()
+        if cur==base_cur:
+            fx=Decimal('1')
+        elif f.get('fxRateToBase') not in (None,'') and dec(f.get('fxRateToBase'))>0:
+            fx=dec(f['fxRateToBase'])
+        else:
+            return {'status':'missing_fx_rate','symbol':sym,'currency':cur,'record_id':rid,'limitations':[f'Missing fxRateToBase for {cur} trade {rid}; ACB withheld.']}
+        mult=dec(f.get('multiplier') or '1')
+        gross_base=qty*dec(f['tradePrice'])*mult*fx
+        comm_cur=str(f.get('ibCommissionCurrency') or cur).upper()
+        comm_fx=Decimal('1') if comm_cur==base_cur else fx
+        comm_base=abs(dec(f.get('ibCommission') or '0'))*comm_fx
+        if side=='BUY':
+            pool['shares']+=qty
+            pool['total_acb_base']+=(gross_base+comm_base)
+        elif side=='SELL':
+            if qty>pool['shares']:
+                warnings.append({'code':'incomplete_cost_basis_oversell','symbol':sym,'tax_bucket':bucket,'sold_qty':str(qty),'tracked_shares':str(pool['shares'])})
+                if pool['shares']<=0: continue
+                sell_qty=pool['shares']
+                proceeds_portion=gross_base*(sell_qty/qty)-comm_base*(sell_qty/qty)
+            else:
+                sell_qty=qty
+                proceeds_portion=gross_base-comm_base
+            acb_per_sh=pool['total_acb_base']/pool['shares']
+            acb_relieved=acb_per_sh*sell_qty
+            gain=proceeds_portion-acb_relieved
+            pool['shares']-=sell_qty
+            pool['total_acb_base']-=acb_relieved
+            realized.append({'date':d_iso,'tax_bucket':bucket,'symbol':sym,'sold_qty':str(sell_qty),'proceeds_base':str(round(proceeds_portion,2)),'acb_relieved_base':str(round(acb_relieved,2)),'realized_gain_base':str(round(gain,2))})
     summary=[]
     for (bucket, sym), pool in sorted(pools.items()):
         if pool['shares']==0 and not any(x['symbol']==sym and x['tax_bucket']==bucket for x in realized): continue
         acb_unit=(pool['total_acb_base']/pool['shares']) if pool['shares']>0 else Decimal(0)
         summary.append({'tax_bucket':bucket,'symbol':sym,'shares_held':str(pool['shares']),'pooled_acb_base':str(round(pool['total_acb_base'],2)),'acb_per_unit_base':str(round(acb_unit,4))})
-    return {'status':'ok','base_currency':base_cur,'acb_pools':summary,'realized_dispositions':realized,'limitations':['Educational pooled-ACB estimate from recorded trades; verify superficial-loss adjustments before tax filing.']}
+    return {'status':'partial_missing_cost_basis' if warnings else 'ok','base_currency':base_cur,'acb_pools':summary,'realized_dispositions':realized,'warnings':warnings,'limitations':['Chronological pooled-ACB estimate from recorded trades/splits; verify superficial-loss adjustments before tax filing.']}
 
 def discover_opportunities(universe_symbols=None, features_by_symbol=None, max_candidates=5):
     """v0.6.0 A01: Two-stage deterministic opportunity screener (no daily whole-market LLM scan; returns no_compelling_opportunity when thresholds fail)."""
@@ -968,7 +991,7 @@ def discover_opportunities(universe_symbols=None, features_by_symbol=None, max_c
     feat_map={k.upper():v for k,v in (features_by_symbol or {}).items()}
     scored=[]; excluded=[]
     for sym in syms:
-        f=feat_map.get(sym)
+        f=feat_map.get(sym) or market.generate_quality_features(sym)
         if not f:
             b=market.bars(sym, 60)
             if len(b)<20:
@@ -988,16 +1011,21 @@ def discover_opportunities(universe_symbols=None, features_by_symbol=None, max_c
     return {'status':'ok' if top else 'no_compelling_opportunity','screened_count':len(syms),'qualified_count':len(scored),'candidates':top,'excluded':excluded,'limitations':['Stage A deterministic screen only; candidates require Stage B primary evidence and Red-Team verification before any proposal.']}
 
 def daily_pnl_bridge(days=30):
-    """v0.7.0 Q03: Portfolio NAV change decomposition into market price P&L, external cashflows, dividends/interest, commissions, and residual."""
+    """v0.7.0 Q03: Reconciled Portfolio NAV change bridge into external flows, income, commissions, and market/FX residual."""
     snap=finance.load_full_portfolio_snapshot()
     if snap.status in {'unavailable','not_configured','missing_accounts','date_mismatch'}:
         return {'status':snap.status}
+    hist=finance.history(limit=max(2, int(days)+5))
+    if len(hist)<2: return {'status':'insufficient_nav_history','as_of':snap.as_of}
     perf=finance.performance()
     intervals=perf.get('intervals') or []
     if not intervals: return {'status':'insufficient_nav_history','as_of':snap.as_of}
     win=intervals[-max(1,int(days)):]
+    start_d=win[0]['from']
+    start_nav=next((dec(h['nav']) for h in hist if h['date']==start_d), None)
+    if start_nav is None: start_nav=dec(hist[0]['nav'])
     ext_flows=sum((dec(r['external_flow']) for r in win), Decimal(0))
-    cutoff=(date.fromisoformat(snap.as_of)-timedelta(days=int(days))).isoformat()
+    cutoff=start_d
     divs=Decimal(0); comms=Decimal(0)
     with db('finance') as c:
         finance_schema(c)
@@ -1014,4 +1042,6 @@ def daily_pnl_bridge(days=30):
                     divs+=dec(f.get('amountInBase') or f.get('amount') or 0)
             elif r['category']=='trade':
                 comms+=abs(dec(f.get('ibCommission') or 0))
-    return {'status':'ok','window_days':int(days),'as_of':snap.as_of,'ending_nav_base':str(snap.nav),'external_flows_base':str(round(ext_flows,2)),'dividends_and_interest_base':str(round(divs,2)),'commissions_base':str(round(comms,2)),'limitations':['Residual market P&L and FX translation are inferred after subtracting external flows, income, and commissions.']}
+    total_chg=snap.nav-start_nav
+    market_fx_pnl=total_chg-ext_flows-divs+comms
+    return {'status':'ok','window_from':start_d,'as_of':snap.as_of,'starting_nav_base':str(round(start_nav,2)),'ending_nav_base':str(round(snap.nav,2)),'total_nav_change_base':str(round(total_chg,2)),'external_flows_base':str(round(ext_flows,2)),'dividends_and_interest_base':str(round(divs,2)),'commissions_base':str(round(comms,2)),'market_and_fx_pnl_base':str(round(market_fx_pnl,2)),'reconciles_to_nav':True,'limitations':['Market & FX P&L equals total NAV change minus external flows and income plus commissions.']}

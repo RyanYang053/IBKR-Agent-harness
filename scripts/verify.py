@@ -176,7 +176,7 @@ def knowledge_checks(home):
         os.environ['PERSONAL_AGENT_HOME'] = clean_tmp
         reload(core); reload(finance); reload(decision); reload(quant)
         finance.import_xml(ROOT / 'tests' / 'fixtures' / 'two_accounts.xml')
-        pol_sell = quant.evaluate_policy(proposed_trade={'symbol': 'SYNTH', 'action': 'SELL', 'amount_base': '999999', 'account': 'U0000001'})
+        pol_sell = quant.evaluate_policy(proposed_trade={'symbol': 'SYNTH', 'action': 'SELL', 'amount_base': '999999', 'account': 'margin'})
         check('unified evaluate_policy oversell block', any(b['rule'] == 'insufficient_account_position' for b in pol_sell.get('hard_blocks', [])))
         alloc_stale = quant.allocate_incremental_capital('500', ['QQQ', 'SYNTH'])
         check('allocator blocks stale ledger', alloc_stale.get('status') == 'blocked_stale_ledger')
@@ -357,6 +357,9 @@ def knowledge_checks(home):
             market.record_financial_fact('PITCO', q_per, 'IS', 'OperatingIncome', 20 + q_i*2, filed_at=av, available_at=av)
             market.record_financial_fact('PITCO', q_per, 'CF', 'OperatingCashFlow', 25, filed_at=av, available_at=av)
             market.record_financial_fact('PITCO', q_per, 'CF', 'CapEx', 5, filed_at=av, available_at=av)
+            market.record_financial_fact('PITCO', q_per, 'BS', 'TotalDebt', 20, filed_at=av, available_at=av)
+            market.record_financial_fact('PITCO', q_per, 'BS', 'ShareholdersEquity', 100, filed_at=av, available_at=av)
+            market.record_financial_fact('PITCO', q_per, 'BS', 'Cash', 10, filed_at=av, available_at=av)
         market.record_financial_fact('PITCO', '2026Q1', 'IS', 'Revenue', 95, filed_at='2026-05-01', available_at='2026-05-01')
         pit_before = market.get_facts_pit('PITCO', as_of='2026-03-01', period='2026Q1')
         pit_after = market.get_facts_pit('PITCO', as_of='2026-06-01', period='2026Q1')
@@ -377,7 +380,42 @@ def knowledge_checks(home):
         knowledge.resolve_forecast_prediction(p1['id'], 1)
         brier = knowledge.brier_calibration_report()
         sh_chk = ops.shadow_mode_check()
-        check('v0.6-v1.0 discovery, alerts, calibration, and shadow check', disc_none['status'] == 'no_compelling_opportunity' and disc_hit['candidates'][0]['symbol'] == 'QQQ' and al2['deduplicated'] is True and al2['hit_count'] == 2 and brier['resolved_count'] == 1 and brier['unresolved_count'] == 1 and sh_chk['orders'] == 'disabled')
+        check('v0.6-v1.0 discovery, alerts, calibration, and shadow check', disc_none['status'] == 'no_compelling_opportunity' and disc_hit['candidates'][0]['symbol'] == 'QQQ' and al2['deduplicated'] is True and al2['hit_count'] == 2 and brier['resolved_count'] == 1 and brier['unresolved_count'] == 1 and sh_chk['orders'] == 'disabled' and sh_chk['status'] == 'blocked')
+
+        # Audit-83da731 counterexample regressions:
+        # A. Adding 1 more option contract doubles delta-notional exposure from 50% to 100%
+        opt_snap = {
+            'status': 'ok', 'advice_allowed': True, 'as_of': date.today().isoformat(), 'nav': '10000', 'currency': 'CAD',
+            'accounts': [{'account': 'margin', 'nav': '10000', 'cash': '5000', 'allow_margin': True}],
+            'positions': [{'account': 'margin', 'conid': 'OPT_X', 'symbol': 'OPT_X', 'asset': 'OPT', 'currency': 'CAD', 'quantity': '1', 'multiplier': '100', 'value_base': '500', 'underlying_price': '100', 'underlying_currency': 'CAD', 'fx_rate_to_base': '1', 'delta': '0.5'}]
+        }
+        opt_add = quant.evaluate_policy(opt_snap, {'symbol': 'OPT_X', 'conid': 'OPT_X', 'asset': 'OPT', 'action': 'BUY', 'amount_base': '500', 'quantity': '1', 'account': 'margin'}, investment_policy=pol_cfg, mode='PROPOSED_PLAN')
+        check('option buy doubles delta exposure to 100pct', abs(opt_add['exposure_summary']['options_delta_equiv_weight'] - 1.0) < 1e-6)
+
+        # B. Non-margin TFSA negative cash rejected in simulate_allocation
+        tfsa_zero = {'status': 'ok', 'advice_allowed': True, 'as_of': date.today().isoformat(), 'nav': '1000', 'currency': 'CAD', 'accounts': [{'account': 'tfsa', 'nav': '1000', 'cash': '0', 'allow_margin': False}], 'positions': []}
+        tfsa_blocked = False
+        try:
+            quant.simulate_allocation(tfsa_zero, proposed_trades=[{'symbol': 'QQQ', 'action': 'BUY', 'amount_base': '500', 'account': 'tfsa'}])
+        except ValueError:
+            tfsa_blocked = True
+        check('tfsa negative cash rejected by reducer', tfsa_blocked)
+
+        # C. Recoverable approving intent with NULL memory_id
+        wf_null = ops.run_workflow('equity_valuation_and_expectations', {'symbol': 'QQQ', 'propose_thesis': 'Null crash recovery', 'falsifier': 'Break'})
+        with core.db('ops') as c:
+            c.execute("UPDATE workflow_runs SET status='approving' WHERE run_id=?", (wf_null['run_id'],))
+            c.execute("INSERT INTO approval_intents VALUES(?,?,?,?,?,?)", (wf_null['run_id'], 'approving', 'null_crash', None, core.now(), core.now()))
+        rec_null = ops.approve_workflow(wf_null['run_id'], 'recovered')
+        check('approving NULL memory_id crash recovery', rec_null['status'] == 'completed' and rec_null['committed_memory_id'] is not None)
+
+        # D. Concrete IBKRTWSAdapter fails closed when TWS unreachable + PIT auto discovery + ACB oversell warning
+        tws_res = broker.sync_broker_live(port=59999)
+        pit_disc = decision.discover_opportunities(['PITCO'])
+        with core.db('finance') as c:
+            c.execute('INSERT INTO records VALUES(?,?,?,?,?)', ('margin', 'trade', 'acb_over', json.dumps({'symbol': 'TESTACB', 'assetCategory': 'STK', 'buySell': 'SELL', 'quantity': '20', 'tradePrice': '130', 'currency': 'CAD'}), 'syn'))
+        acb_over = decision.compute_canadian_acb('TESTACB', 'margin')
+        check('tws fails closed, pit auto discovery, and acb oversell warning', tws_res['status'] == 'unavailable' and tws_res['live_verified'] is False and pit_disc['excluded'][0]['reason'] == 'insufficient_margin_of_safety' and acb_over['status'] == 'partial_missing_cost_basis')
 
         os.environ['PERSONAL_AGENT_HOME'] = prev_h2
         reload(core); reload(finance); reload(market); reload(decision); reload(knowledge); reload(quant); reload(ops)

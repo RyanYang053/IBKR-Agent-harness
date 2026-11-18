@@ -244,15 +244,17 @@ def record_forecast_prediction(symbol, event_def, outcome_date, probability, thr
         pid=c.execute('INSERT INTO forecast_predictions(symbol,event_def,threshold,outcome_date,probability,source,status,created_at) VALUES(?,?,?,?,?,?,?,?)',(sym,event_def.strip(),str(threshold),str(outcome_date),round(p,4),source,'unresolved',now())).lastrowid
     return {'id':pid,'symbol':sym,'probability':round(p,4),'status':'unresolved'}
 
-def resolve_forecast_prediction(pred_id, outcome_hit, note=''):
+def resolve_forecast_prediction(pred_id, outcome_hit, note='', actual_event_at=''):
     hit=int(outcome_hit)
     if hit not in {0, 1}: raise ValueError('outcome_hit must be 0 or 1')
+    ev_ts=str(actual_event_at or now())
     with db('knowledge') as c:
         _memory(c)
-        row=c.execute('SELECT status FROM forecast_predictions WHERE id=?',(int(pred_id),)).fetchone()
+        row=c.execute('SELECT status, created_at FROM forecast_predictions WHERE id=?',(int(pred_id),)).fetchone()
         if not row: raise ValueError('prediction not found')
         if row['status']!='unresolved': raise ValueError('prediction already resolved and locked')
-        c.execute("UPDATE forecast_predictions SET status='resolved', outcome_hit=?, note=?, resolved_at=? WHERE id=?",(hit,str(note),now(),int(pred_id)))
+        if ev_ts<row['created_at'][:10]: raise ValueError('cannot score outcome that occurred before prediction timestamp')
+        c.execute("UPDATE forecast_predictions SET status='resolved', outcome_hit=?, note=?, resolved_at=? WHERE id=?",(hit,str(note),ev_ts,int(pred_id)))
     return {'id':int(pred_id),'status':'resolved','outcome_hit':hit}
 
 def brier_calibration_report():
@@ -265,3 +267,9 @@ def brier_calibration_report():
         return {'resolved_count':0,'unresolved_count':unres,'brier_score':None,'status':'insufficient_resolved_sample'}
     brier=sum((float(r['probability'])-float(r['outcome_hit']))**2 for r in res)/len(res)
     return {'resolved_count':len(res),'unresolved_count':unres,'brier_score':round(brier,4),'status':'ok'}
+
+def find_by_approval_run_id(run_id):
+    with db('knowledge') as c:
+        _memory(c)
+        row=c.execute('SELECT id, kind, symbol, content, created_at FROM memory WHERE approval_run_id=?',(str(run_id),)).fetchone()
+    return dict(row) if row else None

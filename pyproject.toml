@@ -1,6 +1,6 @@
 [project]
 name = "ibkr-agent-harness"
-version = "1.0.0"
+version = "1.0.0b1"
 description = "Personal Investment Operating System & Stateful Agent Harness for Interactive Brokers: IPS mandate engine, Multi-Stage/Driver/Reverse DCF, MCTR covariance & CVaR risk, SEC 10-K forensics, Options/Strategy Labs, and DLP-isolated MCP."
 readme = "README.md"
 license = {text = "MIT"}

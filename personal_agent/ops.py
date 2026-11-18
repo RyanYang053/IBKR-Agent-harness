@@ -507,7 +507,7 @@ def approve_workflow(run_id, operator_note=''):
     state=get_workflow_run(run_id)
     if state.get('status')=='not_found': raise ValueError('workflow run not found')
     checkpoint=dict(state['checkpoint'])
-    rec_mid=None; rec_note=''; need_repair=False
+    rec_mid=None; rec_note=''; need_repair=False; recovering_null_intent=False
     with db('ops') as c:
         schema(c)
         intent=c.execute('SELECT * FROM approval_intents WHERE run_id=?',(str(run_id),)).fetchone()
@@ -522,6 +522,14 @@ def approve_workflow(run_id, operator_note=''):
             elif intent['decision']=='approving' and intent['memory_id'] is not None:
                 rec_mid=intent['memory_id']; rec_note=intent['operator_note']; need_repair=True
                 c.execute("UPDATE approval_intents SET decision='approved', updated_at=? WHERE run_id=?",(now(), str(run_id)))
+            elif intent['decision']=='approving' and intent['memory_id'] is None:
+                # Check if knowledge.sqlite3 already committed for this run_id before crash
+                k_existing=knowledge.find_by_approval_run_id(str(run_id))
+                if k_existing:
+                    rec_mid=k_existing['id']; rec_note=intent['operator_note']; need_repair=True
+                    c.execute("UPDATE approval_intents SET memory_id=?, decision='approved', updated_at=? WHERE run_id=?",(rec_mid, now(), str(run_id)))
+                else:
+                    recovering_null_intent=True
     if need_repair and rec_mid is not None:
         done=list(state['completed_steps'])
         for s_name in ('human_approved','committed_to_memory'):
@@ -569,17 +577,18 @@ def approve_workflow(run_id, operator_note=''):
             except ValueError as ve:
                 if 'shifted >5%' in str(ve): raise
 
-    # Atomic CAS intent claim via approval_intents + workflow_runs
+    # Atomic CAS intent claim via approval_intents + workflow_runs (or resume approving-NULL-memory recovery)
     stamp=now()
-    with db('ops') as c:
-        schema(c)
-        cur=c.execute("UPDATE workflow_runs SET status='approving', updated_at=? WHERE run_id=? AND status='awaiting_approval'",(stamp, str(run_id)))
-        if cur.rowcount==0:
-            intent=c.execute('SELECT * FROM approval_intents WHERE run_id=?',(str(run_id),)).fetchone()
-            if intent and intent['decision']=='approved':
-                return {'run_id':run_id,'status':'completed','idempotent':True,'committed_memory_id':intent['memory_id'],'orders':'disabled'}
-            raise ValueError('workflow run already claimed or no longer awaiting approval')
-        c.execute("INSERT OR IGNORE INTO approval_intents(run_id,decision,operator_note,memory_id,created_at,updated_at) VALUES(?,?,?,?,?,?)",(str(run_id),'approving',operator_note,None,stamp,stamp))
+    if not recovering_null_intent:
+        with db('ops') as c:
+            schema(c)
+            cur=c.execute("UPDATE workflow_runs SET status='approving', updated_at=? WHERE run_id=? AND status='awaiting_approval'",(stamp, str(run_id)))
+            if cur.rowcount==0:
+                intent=c.execute('SELECT * FROM approval_intents WHERE run_id=?',(str(run_id),)).fetchone()
+                if intent and intent['decision']=='approved':
+                    return {'run_id':run_id,'status':'completed','idempotent':True,'committed_memory_id':intent['memory_id'],'orders':'disabled'}
+                raise ValueError('workflow run already claimed or no longer awaiting approval')
+            c.execute("INSERT OR IGNORE INTO approval_intents(run_id,decision,operator_note,memory_id,created_at,updated_at) VALUES(?,?,?,?,?,?)",(str(run_id),'approving',operator_note,None,stamp,stamp))
 
     memory_id=None
     try:
@@ -755,7 +764,7 @@ def acknowledge_alert(dedup_key):
     return {'dedup_key':dedup_key,'acknowledged':cur.rowcount>0}
 
 def shadow_mode_check():
-    """v1.0 P02: End-of-day operational readiness & shadow-mode verification across Flex, Broker, Policy, Backups, and Evals."""
+    """v1.0 P02: Fail-closed operational readiness check across Flex freshness, Broker reconciliation, IPS coverage, workflow health, and Evals."""
     from . import broker
     snap=finance.load_full_portfolio_snapshot()
     rec=broker.reconcile_live_to_flex()
@@ -765,15 +774,41 @@ def shadow_mode_check():
         schema(c)
         pending=c.execute("SELECT count(*) FROM workflow_runs WHERE status='awaiting_approval'").fetchone()[0]
         stuck=c.execute("SELECT count(*) FROM workflow_runs WHERE status='approving'").fetchone()[0]
+    eval_ok=bool(ev_runs and ev_runs[0]['score_pct']==100.0)
+    flex_ok=bool(snap.advice_allowed)
+    broker_ok=(rec.get('status')=='reconciled')
+    pol_ok=(pol.get('status') not in {'blocked','blocked_policy_violation','invalid_nav'}) and bool(pol.get('risk_coverage_complete'))
+    ready=flex_ok and broker_ok and pol_ok and stuck==0 and eval_ok
+    blockers=[]
+    if not flex_ok: blockers.append(f'flex:{snap.status}')
+    if not broker_ok: blockers.append(f"broker:{rec.get('status')}")
+    if not pol_ok: blockers.append(f"policy:{pol.get('status')}")
+    if stuck>0: blockers.append(f'stuck_approving:{stuck}')
+    if not eval_ok: blockers.append('eval_not_100pct')
     return {
-        'status':'ok' if snap.status in {'ok','partial_or_stale'} and stuck==0 else 'attention_required',
+        'status':'ok' if ready else 'blocked',
+        'production_accepted':False,
+        'readiness_blockers':blockers,
         'flex_status':snap.status,
         'flex_snapshot_id':snap.snapshot_id,
         'broker_reconciliation_status':rec.get('status'),
         'policy_audit_status':pol.get('status'),
+        'risk_coverage_complete':pol.get('risk_coverage_complete'),
         'pending_approvals':pending,
         'stuck_approving_runs':stuck,
         'latest_eval_score_pct':ev_runs[0]['score_pct'] if ev_runs else None,
         'orders':'disabled',
-        'limitations':['20-day live shadow-mode window and real IBKR TWS socket permissions must be validated on the operator host.']
+        'limitations':['20-day live shadow-mode window and real IBKR TWS socket permissions must be validated on the operator host before production acceptance.']
     }
+
+def run_daily_monitoring():
+    """v0.6.0 A03: Run deterministic opportunity discovery + policy audit and emit deduplicated alerts."""
+    disc=decision.discover_opportunities()
+    pol=quant.evaluate_policy(mode='AUDIT')
+    emitted=[]
+    for b in (pol.get('hard_blocks') or []):
+        emitted.append(emit_alert(f"policy:{b['rule']}", b.get('symbol',''), 'high', f"IPS Hard Block: {b['rule']}", str(b.get('detail') or b)))
+    for c in (disc.get('candidates') or []):
+        emitted.append(emit_alert(f"opp:{c['symbol']}", c['symbol'], 'info', f"Opportunity Candidate: {c['symbol']}", f"score={c['composite_score']} roic={c['roic']} disc={c['valuation_discount_pct']}"))
+    record_scheduled_job('daily_monitoring', now()[:10], 'ok', {'candidates':len(disc.get('candidates') or []),'alerts':len(emitted)})
+    return {'status':'ok','discovery_status':disc.get('status'),'alerts_processed':len(emitted),'orders':'disabled'}

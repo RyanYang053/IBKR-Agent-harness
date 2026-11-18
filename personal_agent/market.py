@@ -384,14 +384,22 @@ def sync_filings(symbol):
     try: facts=_request('https://data.sec.gov/api/xbrl/companyfacts/CIK'+cik+'.json', {'User-Agent':contact}, 'edgar', 0.2)
     except RuntimeError as exc: return {'symbol':symbol,'status':'unavailable','error':str(exc)}
     units=(facts.get('facts') or {}).get('us-gaap') or {}
-    saved=0; stamp=datetime.now(timezone.utc).isoformat()
+    saved=0; pit_saved=0; stamp=datetime.now(timezone.utc).isoformat()
+    concept_std_map={
+        'Revenues':('IS','Revenue'),'RevenueFromContractWithCustomerExcludingAssessedTax':('IS','Revenue'),'SalesRevenueNet':('IS','Revenue'),
+        'OperatingIncomeLoss':('IS','OperatingIncome'),'NetIncomeLoss':('IS','NetIncome'),'EarningsPerShareDiluted':('IS','EPSDiluted'),
+        'NetCashProvidedByUsedInOperatingActivities':('CF','OperatingCashFlow'),'PaymentsToAcquirePropertyPlantAndEquipment':('CF','CapEx'),
+        'CashAndCashEquivalentsAtCarryingValue':('BS','Cash'),'LongTermDebt':('BS','TotalDebt'),'LongTermDebtNoncurrent':('BS','TotalDebt'),
+        'ShortTermBorrowings':('BS','ShortTermDebt'),'WeightedAverageNumberOfDilutedSharesOutstanding':('IS','DilutedShares'),'CommonStockSharesOutstanding':('BS','SharesOutstanding')
+    }
+    ev=record_evidence(symbol.upper(), 'xbrl_companyfacts', 'sec_edgar', f'{symbol.upper()} SEC XBRL CompanyFacts', f'CIK {cik}', url=f'https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json', cik=cik, filed_at=stamp[:10], available_at=stamp[:10])
     with db('market') as c:
         schema(c)
         for concept in EDGAR_CONCEPTS:
             unit_map=(units.get(concept) or {}).get('units') or {}
-            entries=unit_map.get('USD') or unit_map.get('USD/shares') or unit_map.get('shares') or []
+            unit_name='USD' if 'USD' in unit_map else ('USD/shares' if 'USD/shares' in unit_map else ('shares' if 'shares' in unit_map else ''))
+            entries=unit_map.get(unit_name) or []
             annual=[row for row in entries if row.get('form') in {'10-K','20-F'} and row.get('fp')=='FY' and row.get('end') and row.get('val') is not None]
-            if not annual: continue
             by_period={}
             for row in annual:
                 end=row['end']
@@ -401,7 +409,25 @@ def sync_filings(symbol):
                 item=by_period[end]
                 c.execute('INSERT OR REPLACE INTO filings VALUES(?,?,?,?,?,?,?)',(symbol.upper(),concept,end,str(item.get('val')),item.get('form'),'sec_edgar',stamp))
                 saved+=1
-    return {'symbol':symbol.upper(),'provider':'sec_edgar','status':'ok','facts':saved}
+            # Populate PIT financial_statements_pit (up to 10y annual + 20q quarterly)
+            stmt_type, std_concept = concept_std_map.get(concept, ('OTHER', concept))
+            for end in sorted(by_period.keys(), reverse=True)[:10]:
+                item=by_period[end]; f_dt=str(item.get('filed') or end)
+                c.execute('INSERT OR IGNORE INTO financial_statements_pit(symbol,period,statement_type,concept,value,currency,unit,accounting_standard,filed_at,available_at,revision_seq,evidence_id) VALUES(?,?,?,?,?,?,?,?,?,?,1,?)',
+                    (symbol.upper(), f'FY{end[:4]}', stmt_type, std_concept, float(item['val']), 'USD', unit_name or 'USD', 'US-GAAP', f_dt, f_dt, ev['evidence_id']))
+                pit_saved+=1
+            quarterly=[row for row in entries if row.get('form') in {'10-Q','10-K'} and row.get('fp') in {'Q1','Q2','Q3','Q4'} and row.get('end') and row.get('val') is not None]
+            q_by={}
+            for row in quarterly:
+                q_key=f"{row['end'][:4]}{row['fp']}"
+                if q_key not in q_by or (row.get('filed') or '')>(q_by[q_key].get('filed') or ''):
+                    q_by[q_key]=row
+            for q_key in sorted(q_by.keys(), reverse=True)[:20]:
+                item=q_by[q_key]; f_dt=str(item.get('filed') or item['end'])
+                c.execute('INSERT OR IGNORE INTO financial_statements_pit(symbol,period,statement_type,concept,value,currency,unit,accounting_standard,filed_at,available_at,revision_seq,evidence_id) VALUES(?,?,?,?,?,?,?,?,?,?,1,?)',
+                    (symbol.upper(), q_key, stmt_type, std_concept, float(item['val']), 'USD', unit_name or 'USD', 'US-GAAP', f_dt, f_dt, ev['evidence_id']))
+                pit_saved+=1
+    return {'symbol':symbol.upper(),'provider':'sec_edgar','status':'ok','facts':saved,'pit_facts':pit_saved,'evidence_id':ev['evidence_id']}
 
 def filings(symbol):
     with db('market') as c:
@@ -850,3 +876,31 @@ def compute_ttm_and_ratios(symbol, as_of=''):
         'ttm_metrics':{'revenue':rev,'operating_income':ebit,'operating_cash_flow':ocf,'capex':capex,'free_cash_flow':fcf},
         'ratios':{'operating_margin':round(op_margin,4) if op_margin is not None else None,'roic_pre_tax_approx':round(roic,4) if roic is not None else None}
     }
+
+def generate_quality_features(symbol, as_of=''):
+    """v0.6.0 / Phase 3: Automatically derive fundamental quality, FCF growth, and dilution features from PIT financial statements."""
+    sym=str(symbol or '').strip().upper()
+    pit=get_facts_pit(sym, as_of=as_of)
+    facts=pit.get('facts') or []
+    if not facts: return None
+    by_fy={}
+    for f in facts:
+        if f['period'].startswith('FY'):
+            by_fy.setdefault(f['period'], {})[f['concept']]=f['value']
+    fys=sorted(by_fy.keys(), reverse=True)
+    ttm=compute_ttm_and_ratios(sym, as_of=as_of)
+    roic=(ttm.get('ratios') or {}).get('roic_pre_tax_approx')
+    fcf_g=0.0; dil=0.0
+    if len(fys)>=2:
+        c0=by_fy[fys[0]]; c1=by_fy[fys[1]]
+        fcf0=(c0.get('OperatingCashFlow',0)-abs(c0.get('CapEx',0))) if ('OperatingCashFlow' in c0 and 'CapEx' in c0) else None
+        fcf1=(c1.get('OperatingCashFlow',0)-abs(c1.get('CapEx',0))) if ('OperatingCashFlow' in c1 and 'CapEx' in c1) else None
+        if fcf0 is not None and fcf1 and abs(fcf1)>1e-6: fcf_g=(fcf0-fcf1)/abs(fcf1)
+        sh0=c0.get('DilutedShares') or c0.get('SharesOutstanding')
+        sh1=c1.get('DilutedShares') or c1.get('SharesOutstanding')
+        if sh0 and sh1 and sh1>0: dil=(sh0-sh1)/sh1
+        if roic is None and c0.get('OperatingIncome') is not None:
+            ic=(c0.get('TotalDebt',0)+c0.get('ShareholdersEquity',0)-c0.get('Cash',0))
+            if ic>0: roic=(c0['OperatingIncome']*0.79)/ic
+    if roic is None: return None
+    return {'roic':round(float(roic),4),'fcf_growth':round(float(fcf_g),4),'dilution_rate':round(float(dil),4),'valuation_discount_pct':0.0,'source':'pit_financial_statements'}
