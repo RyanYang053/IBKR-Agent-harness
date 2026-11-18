@@ -623,7 +623,8 @@ def factor_stress_test(benchmark_shock='-0.15', fx_shock='0.02', benchmark='QQQ'
     }
 
 def evaluate_trade_gate(symbol, action, amount_base, account='taxable'):
-    """Deterministic 6-point institutional Pre-Trade Gatekeeper & Red-Team audit before any discretionary action."""
+    """Deterministic 6-point institutional Pre-Trade Gatekeeper & Red-Team audit backed by the canonical IPS evaluate_policy engine."""
+    from . import quant
     sym=str(symbol or '').strip().upper()
     act=str(action or '').strip().upper()
     if act not in {'BUY','ADD','TRIM','SELL'}: raise ValueError('action must be BUY, ADD, TRIM, or SELL')
@@ -646,6 +647,12 @@ def evaluate_trade_gate(symbol, action, amount_base, account='taxable'):
     post_eq=sum(post_vals.values(), Decimal(0))
     pre_eff=(Decimal(1)/sum((v/pre_eq)**2 for v in all_vals.values() if v>0)) if pre_eq>0 else None
     post_eff=(Decimal(1)/sum((v/post_eq)**2 for v in post_vals.values() if v>0)) if post_eq>0 else None
+
+    pol_res=quant.evaluate_policy(portfolio_snapshot=snap, proposed_trade={'symbol':sym,'action':act,'amount_base':str(notional),'account':account})
+    targets=pol_res.get('policy_targets') or {}
+    max_single=Decimal(str(targets.get('max_single_stock_weight', 0.15)))
+    max_cluster=Decimal(str(targets.get('max_correlated_cluster_weight', 0.30)))
+
     sym_rets=_bar_returns(sym, 90); corr_peers=[]; cluster_val=post_val
     if len(sym_rets)>=20:
         for psym, p in pos_map.items():
@@ -657,13 +664,17 @@ def evaluate_trade_gate(symbol, action, amount_base, account='taxable'):
         corr_peers.sort(key=lambda r:r['corr_90d'], reverse=True)
     bucket=_tax_bucket(account)
     flags=[]; red_team=[]
-    if not snap.get('advice_allowed'):
-        flags.append({'gate':'freshness','severity':'block','detail':'Ledger snapshot is stale or incomplete; sync Flex before acting.'})
-    if act in {'BUY','ADD'} and post_w>=Decimal('0.15'):
-        flags.append({'gate':'concentration','severity':'high','detail':f'Post-trade single-name weight reaches {round(post_w*100,2)}% of NAV (>=15% threshold).'})
-        red_team.append('What specific catalyst or balance-sheet protection justifies >=15% single-stock concentration under a -25% drawdown?')
-    if act in {'BUY','ADD'} and nav>0 and (cluster_val/nav)>=Decimal('0.30') and corr_peers:
-        flags.append({'gate':'correlated_cluster','severity':'high','detail':f"Combined correlated cluster ({sym} + {', '.join(r['symbol'] for r in corr_peers[:4])}) reaches {round(cluster_val/nav*100,2)}% of NAV."})
+    hard_blocks=pol_res.get('hard_blocks') or []
+    for hb in hard_blocks:
+        flags.append({'gate':hb['rule'],'severity':'block','detail':hb.get('detail') or f"{hb['rule']}: requested {hb.get('requested_sell')} vs available {hb.get('available_position_base')} in {hb.get('account')}"})
+    for br in (pol_res.get('breaches') or []):
+        if br['rule'] in {'tactical_max_weight_exceeded','max_economic_leverage','max_gross_economic_leverage','min_cash_reserve'}:
+            flags.append({'gate':f"policy_{br['rule']}",'severity':'high','detail':f"Post-trade {br['rule']}={br.get('actual')} breaches IPS limit {br.get('limit')}."})
+    if act in {'BUY','ADD'} and post_w>=max_single:
+        flags.append({'gate':'concentration','severity':'high','detail':f'Post-trade single-name weight reaches {round(post_w*100,2)}% of NAV (>= {round(max_single*100,1)}% IPS limit).'})
+        red_team.append(f'What specific catalyst or balance-sheet protection justifies >={round(max_single*100,1)}% single-stock concentration under a -25% drawdown?')
+    if act in {'BUY','ADD'} and nav>0 and (cluster_val/nav)>=max_cluster and corr_peers:
+        flags.append({'gate':'correlated_cluster','severity':'high','detail':f"Combined correlated cluster ({sym} + {', '.join(r['symbol'] for r in corr_peers[:4])}) reaches {round(cluster_val/nav*100,2)}% of NAV (>= {round(max_cluster*100,1)}% IPS limit)."})
         red_team.append('Are you adding independent alpha, or doubling down on the exact same macro/sector factor already dominating your book?')
     if act in {'SELL','TRIM'} and bucket=='taxable' and existing:
         tax_lot=next((l for l in (existing.get('lots') or []) if l.get('tax_bucket')=='taxable'), None)
@@ -691,7 +702,14 @@ def evaluate_trade_gate(symbol, action, amount_base, account='taxable'):
         flags.append({'gate':'past_mistake_and_goal_guardrails','severity':'medium','detail':f'{len(guards)} active personal rule(s)/post-mortem(s) apply to this decision.'})
     if not red_team:
         red_team.append(f'What does the market currently misprice in {sym} (check reverse_dcf implied growth), and why is your counterparty selling/buying here?')
-    verdict='blocked_stale_ledger' if not snap.get('advice_allowed') else ('caution_review_flags' if flags else 'clear')
+    if not snap.get('advice_allowed'):
+        verdict='blocked_stale_ledger'
+    elif hard_blocks:
+        verdict='blocked_policy_violation'
+    elif flags:
+        verdict='caution_review_flags'
+    else:
+        verdict='clear'
     return {
         'verdict':verdict,
         'symbol':sym,
@@ -699,6 +717,10 @@ def evaluate_trade_gate(symbol, action, amount_base, account='taxable'):
         'account':account,
         'tax_bucket':bucket,
         'amount_base':str(round(notional,2)),
+        'portfolio_as_of':snap.get('as_of'),
+        'portfolio_nav':snap.get('nav'),
+        'policy_hash':pol_res.get('policy_hash'),
+        'post_trade_policy_exposure':pol_res.get('exposure_summary'),
         'sizing_shift':{'pre_weight_of_nav':str(round(pre_w,4)),'post_weight_of_nav':str(round(post_w,4)),'effective_bets_before':str(round(pre_eff,2)) if pre_eff else None,'effective_bets_after':str(round(post_eff,2)) if post_eff else None,'correlated_cluster_weight_after':str(round(cluster_val/nav,4)) if nav>0 else None},
         'correlated_peers_65pct':corr_peers[:6],
         'gate_flags':flags,

@@ -1,8 +1,8 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+$python = Join-Path $root '.venv\Scripts\python.exe'
 $source = Join-Path $root 'local'
-$dest = Join-Path $source ('backups\' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
 if (-not (Test-Path $source)) { exit 0 }
-New-Item -ItemType Directory -Force -Path $dest | Out-Null
-Get-ChildItem $source -Filter '*.sqlite3' -File -ErrorAction SilentlyContinue | Copy-Item -Destination $dest
-Write-Output "backed up to $dest"
+if (-not (Test-Path $python)) { throw 'Python venv missing for SQLite WAL backup' }
+& $python -m personal_agent.cli backup
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

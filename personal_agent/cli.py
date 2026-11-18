@@ -1,5 +1,5 @@
 import argparse,json,sys
-from . import decision,finance,knowledge,market,ops,quant,report
+from . import core,decision,finance,knowledge,market,ops,quant,report
 from .core import config
 
 def main():
@@ -24,6 +24,7 @@ def main():
     at=s.add_parser('attribution'); at.add_argument('--days',type=int,default=90); at.add_argument('--account',default='')
     fd=s.add_parser('filing-delta'); fd.add_argument('symbol'); fd.add_argument('--sync',action='store_true')
     s.add_parser('health')
+    bk=s.add_parser('backup'); bk.add_argument('--dest',default='')
     s.add_parser('telemetry')
     s.add_parser('eval')
     s.add_parser('workflows')
@@ -66,6 +67,7 @@ def main():
                 market.sync_filings(a.symbol); market.sync_filing_sections(a.symbol)
             result=decision.filing_red_flag_audit(a.symbol, include_private=True)
         elif a.command=='health': result=market.system_health()
+        elif a.command=='backup': result=core.backup_databases(a.dest or None)
         elif a.command=='telemetry': result=ops.telemetry_summary()
         elif a.command=='eval': result=ops.run_eval_benchmark()
         elif a.command=='workflows': result=ops.list_workflows()

@@ -155,6 +155,67 @@ def knowledge_checks(home):
     check('earnings expectation gap', exp_gap['verdict'] == 'positive_beat_and_raise' and exp_gap['revenue_surprise_pct'] == 0.08)
     ic_wf = ops.run_workflow('investment_committee_memo', {'symbol': 'QQQ', 'amount_base': '250', 'revenue_t0': '1000', 'shares': '100'})
     check('investment committee 8-step workflow', ic_wf['status'] == 'awaiting_approval' and len(ic_wf['completed_steps']) == 7)
+
+    # v0.3.1 Hardening checks
+    # 1. Approval cannot bypass blocked gate & idempotent re-approve
+    blocked_wf = ops.run_workflow('tax_aware_pre_trade_approval', {'symbol': 'SYNTH', 'action': 'SELL', 'amount_base': '999999', 'account': 'U0000001'})
+    bypass_blocked = False
+    try:
+        ops.approve_workflow(blocked_wf['run_id'], 'Try bypass')
+    except ValueError:
+        bypass_blocked = True
+    check('approval cannot bypass blocked gate', bypass_blocked and blocked_wf['proposed_approval']['gate_verdict'] not in {'clear', 'caution_review_flags'})
+    idem = ops.approve_workflow(staged['run_id'], 'Second approve call')
+    check('approval idempotent', idem.get('idempotent') is True and idem['committed_memory_id'] == resumed['committed_memory_id'])
+
+    # 2. Unified evaluate_policy checks oversell & multi-asset allocator in clean two_accounts ledger
+    with tempfile.TemporaryDirectory() as clean_tmp:
+        from personal_agent import core, finance, decision
+        prev_h = os.environ.get('PERSONAL_AGENT_HOME')
+        os.environ['PERSONAL_AGENT_HOME'] = clean_tmp
+        reload(core); reload(finance); reload(decision); reload(quant)
+        finance.import_xml(ROOT / 'tests' / 'fixtures' / 'two_accounts.xml')
+        pol_sell = quant.evaluate_policy(proposed_trade={'symbol': 'SYNTH', 'action': 'SELL', 'amount_base': '999999', 'account': 'U0000001'})
+        check('unified evaluate_policy oversell block', any(b['rule'] == 'insufficient_account_position' for b in pol_sell.get('hard_blocks', [])))
+        alloc_res = quant.allocate_incremental_capital('500', ['QQQ', 'SYNTH'])
+        synth_cand = next(c for c in alloc_res['candidates'] if c['candidate'] == 'SYNTH')
+        check('multi-asset allocator capm prior', 'optimal_multi_asset_allocation' in alloc_res and synth_cand['expected_return_source'] == 'capm_erp_prior' and synth_cand['assumed_expected_return'] != 0.15)
+        os.environ['PERSONAL_AGENT_HOME'] = prev_h
+        reload(core); reload(finance); reload(decision); reload(quant)
+
+    # 3. Driver DCF with D&A, dilution, terminal ROIC
+    drv_adv = quant.driver_based_valuation('1000', '0.15', '0.25', shares='100', da_pct_rev='0.04', annual_dilution_rate='0.02', terminal_roic='0.20', op_margin_t0='0.20')
+    check('driver dcf da dilution roic', drv_adv['scenarios']['base']['diluted_shares'] > 100 and drv_adv['scenarios']['base']['terminal_reinvestment_rate'] == 0.125)
+
+    # 4. Living thesis immutable history
+    th2 = quant.upsert_living_thesis('QQQ', 'Updated pillars', 'FCF margin', 'New catalyst', 'margin collapse below 15%', change_reason='Quarterly review', evidence_ids=['sec_10k_2026'])
+    th_hist = quant.get_living_thesis('QQQ', include_history=True)
+    check('living thesis immutable history', th2['version'] == 2 and th2['previous_version'] == 1 and len(th_hist) == 2 and th_hist[1]['version'] == 1)
+
+    # 5. Earnings expectations append-only lock
+    exp_locked = False
+    try:
+        quant.record_earnings_expectation('QQQ', '2026Q4', 'management_guidance', exp_revenue=150)
+    except ValueError:
+        exp_locked = True
+    check('earnings expectation pre_earnings locked', exp_locked)
+
+    # 6. Multi-asset capital allocator checked in clean ledger above
+
+    # 7. Options exact N(d2) and no-arbitrage bounds
+    opt_itm = quant.analyze_option_strategy('covered_call', '100', '90', 60, volatility='0.30')
+    opt_arb = quant.analyze_option_strategy('covered_call', '100', '90', 60, premium='2.0')
+    check('options exact nd2 and arb bounds', opt_itm['greeks']['nd2_itm_prob'] != opt_itm['greeks']['delta'] and opt_arb['iv_solver_status'] == 'outside_no_arbitrage_bounds' and opt_arb['solved_iv_from_premium'] is None)
+
+    # 8. Durable workflow resume & WAL-safe SQLite backup
+    from personal_agent import report
+    wf_partial_id = 'wf_resume_test'
+    ops._save_run(wf_partial_id, 'morning_portfolio_review', 'running', 'freshness_and_reconciliation_gate', ['intake_validate', 'freshness_and_reconciliation_gate'], False, {'workflow': 'morning_portfolio_review'}, {'brief': report.daily_brief()}, None, False)
+    wf_resumed = ops.resume_workflow(wf_partial_id)
+    wf_state = ops.get_workflow_run(wf_partial_id)
+    bk_res = core.backup_databases(home / 'test_backup')
+    check('durable workflow resume and wal backup', wf_resumed['status'] == 'completed' and wf_state['retry_count'] == 1 and bk_res['status'] == 'ok' and len(bk_res['databases']) >= 3)
+
     ev = ops.run_eval_benchmark()
     check('evaluation harness 100pct', ev['passed'] == ev['total'] and ev['score_pct'] == 100.0, ev)
 

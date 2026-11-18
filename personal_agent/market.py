@@ -24,6 +24,9 @@ def schema(c):
     CREATE TABLE IF NOT EXISTS cik_map(symbol TEXT PRIMARY KEY, cik TEXT, updated_at TEXT);
     CREATE TABLE IF NOT EXISTS throttle(provider TEXT PRIMARY KEY, ts TEXT);
     ''')
+    b_cols={r[1] for r in c.execute('PRAGMA table_info(bars)')}
+    if 'open_px' not in b_cols: c.execute('ALTER TABLE bars ADD COLUMN open_px TEXT')
+    if 'adj_basis' not in b_cols: c.execute('ALTER TABLE bars ADD COLUMN adj_basis TEXT')
 
 def market_config():
     return config().get('market') or {}
@@ -172,48 +175,69 @@ def sync_quotes():
     rows=[quote(s) for s in symbols]
     return {'status':'ok','quotes':rows,'live':sum(1 for row in rows if row.get('freshness')=='live'),'unavailable':sum(1 for row in rows if row.get('freshness')!='live')}
 
-def _cache_bars(symbol, rows, provider):
+def _cache_bars(symbol, rows, provider, adj_basis='split_and_dividend_adj'):
     with db('market') as c:
         schema(c)
         for row in rows:
-            c.execute('INSERT OR REPLACE INTO bars VALUES(?,?,?,?,?,?,?)',(symbol,'1Day',row['ts'],row['close'],row.get('currency') or 'USD',provider,'historical'))
+            cl=str(row['close'])
+            op=str(row.get('open') if row.get('open') is not None else cl)
+            c.execute('INSERT OR REPLACE INTO bars(symbol,timeframe,ts,close,currency,provider,freshness,open_px,adj_basis) VALUES(?,?,?,?,?,?,?,?,?)',(symbol,'1Day',row['ts'],cl,row.get('currency') or 'USD',provider,'historical',op,adj_basis))
         last=c.execute('SELECT ts FROM bars WHERE symbol=? AND timeframe=? ORDER BY ts DESC LIMIT 1',(symbol,'1Day')).fetchone()
     return last['ts'] if last else None
 
 def sync_bars(symbol, start=None):
     symbol=symbol.upper()
+    default_origin='2000-01-01' if symbol in {'QQQ','SPY','IWM','DIA'} else '2018-01-01'
     with db('market') as c:
         schema(c)
-        last=c.execute('SELECT ts FROM bars WHERE symbol=? AND timeframe=? ORDER BY ts DESC LIMIT 1',(symbol,'1Day')).fetchone()
-    start=start or (last['ts'][:10] if last else '2024-01-01')
+        bounds=c.execute('SELECT min(ts) AS first_ts, max(ts) AS last_ts, min(adj_basis) AS basis FROM bars WHERE symbol=? AND timeframe=?',(symbol,'1Day')).fetchone()
+    need_full_backfill=(not bounds or not bounds['last_ts'] or bounds['basis']!='split_and_dividend_adj' or (symbol in {'QQQ','SPY'} and bounds['first_ts']>'2001-01-01'))
+    fetch_start=start or (default_origin if need_full_backfill else bounds['last_ts'][:10])
     if alpaca_configured() and is_us_equity(symbol):
-        url='https://data.alpaca.markets/v2/stocks/bars?'+urllib.parse.urlencode({'symbols':symbol,'timeframe':'1Day','start':start,'feed':'iex','adjustment':'split','limit':'1000'})
         headers={'APCA-API-KEY-ID':_env('alpaca_key_env'),'APCA-API-SECRET-KEY':_env('alpaca_secret_env')}
         try:
-            payload=_request(url, headers, 'alpaca', 0.35)
-            bars=((payload.get('bars') or {}).get(symbol) or [])
-            saved=[{'ts':row['t'][:10],'close':str(row['c'])} for row in bars if row.get('c') is not None and row.get('t')]
-            _cache_bars(symbol, saved, 'alpaca')
-            return {'symbol':symbol,'provider':'alpaca','freshness':'historical','rows':len(saved)}
+            all_saved=[]; page_token=None
+            for _ in range(10):
+                q={'symbols':symbol,'timeframe':'1Day','start':fetch_start,'feed':'iex','adjustment':'all','limit':'10000'}
+                if page_token: q['page_token']=page_token
+                payload=_request('https://data.alpaca.markets/v2/stocks/bars?'+urllib.parse.urlencode(q), headers, 'alpaca', 0.35)
+                raw_bars=((payload.get('bars') or {}).get(symbol) or [])
+                all_saved.extend({'ts':row['t'][:10],'open':str(row.get('o',row['c'])),'close':str(row['c'])} for row in raw_bars if row.get('c') is not None and row.get('t'))
+                page_token=payload.get('next_page_token')
+                if not page_token: break
+            if need_full_backfill and all_saved:
+                with db('market') as c: c.execute('DELETE FROM bars WHERE symbol=? AND timeframe=?',(symbol,'1Day'))
+            _cache_bars(symbol, all_saved, 'alpaca', 'split_and_dividend_adj')
+            return {'symbol':symbol,'provider':'alpaca','freshness':'historical','adj_basis':'split_and_dividend_adj','rows':len(all_saved)}
         except RuntimeError:
             pass
     try:
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             import yfinance as yf
-            frame=yf.Ticker(symbol).history(start=start, auto_adjust=False, interval='1d')
+            frame=yf.Ticker(symbol).history(start=fetch_start, auto_adjust=True, interval='1d')
     except Exception:
         return {'symbol':symbol,'provider':'yfinance','freshness':'historical','rows':0,'error':'historical request failed'}
-    saved=[{'ts':index.date().isoformat(),'close':str(Decimal(str(value))),'currency':str(getattr(frame,'currency',None) or 'USD')} for index,value in frame['Close'].dropna().items()] if not frame.empty and 'Close' in frame else []
-    _cache_bars(symbol, saved, 'yfinance')
-    return {'symbol':symbol,'provider':'yfinance','freshness':'historical','rows':len(saved),'limitations':['yfinance is best-effort historical data and is not a live price.']}
+    saved=[]
+    if not frame.empty and 'Close' in frame:
+        has_open='Open' in frame
+        cur_code=str(getattr(frame,'currency',None) or 'USD')
+        for index, close_val in frame['Close'].dropna().items():
+            open_val=frame['Open'].get(index, close_val) if has_open else close_val
+            if open_val!=open_val: open_val=close_val
+            saved.append({'ts':index.date().isoformat(),'open':str(round(Decimal(str(open_val)),6)),'close':str(round(Decimal(str(close_val)),6)),'currency':cur_code})
+    if need_full_backfill and saved:
+        with db('market') as c:
+            schema(c); c.execute('DELETE FROM bars WHERE symbol=? AND timeframe=?',(symbol,'1Day'))
+    _cache_bars(symbol, saved, 'yfinance', 'split_and_dividend_adj')
+    return {'symbol':symbol,'provider':'yfinance','freshness':'historical','adj_basis':'split_and_dividend_adj','rows':len(saved),'limitations':['yfinance auto_adjust=True provides split- and dividend-adjusted historical bars, never live quotes.']}
 
 def bars(symbol, limit=120):
     symbol=symbol.upper()
     with db('market') as c:
         schema(c)
-        rows=c.execute('SELECT ts,close,currency,provider,freshness FROM bars WHERE symbol=? AND timeframe=? ORDER BY ts DESC LIMIT ?',(symbol,'1Day',max(1,min(int(limit),1000)))).fetchall()
-    return [{'symbol':symbol,'date':row['ts'],'close':row['close'],'currency':row['currency'],'provider':row['provider'],'freshness':'historical'} for row in reversed(rows)]
+        rows=c.execute('SELECT ts,open_px,close,currency,provider,freshness,adj_basis FROM bars WHERE symbol=? AND timeframe=? ORDER BY ts DESC LIMIT ?',(symbol,'1Day',max(1,min(int(limit),10000)))).fetchall()
+    return [{'symbol':symbol,'date':row['ts'],'open':row['open_px'] or row['close'],'close':row['close'],'currency':row['currency'],'provider':row['provider'],'freshness':'historical','adj_basis':row['adj_basis'] or 'unadjusted_legacy'} for row in reversed(rows)]
 
 def sync_news(symbol):
     token=_env('finnhub_key_env')

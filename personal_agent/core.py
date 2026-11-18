@@ -47,3 +47,23 @@ def read_text(path):
         return '\n'.join(f'[page {i+1}]\n'+(page.extract_text() or '') for i,page in enumerate(PdfReader(p).pages))
     if p.suffix.lower() not in {'.txt','.md','.json','.csv'}: raise ValueError('unsupported text type')
     return p.read_text(encoding='utf-8-sig')
+
+def backup_databases(dest_dir=None):
+    """Online WAL-safe SQLite snapshot backup via sqlite3.Connection.backup() with PRAGMA integrity_check verification."""
+    stamp=datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')
+    target_root=private_dir(Path(dest_dir) if dest_dir else (private_dir(HOME)/'backups'/stamp))
+    backed_up=[]
+    for domain in ('finance','market','knowledge','ops'):
+        src_path=HOME/f'{domain}.sqlite3'
+        if not src_path.exists(): continue
+        dst_path=target_root/f'{domain}.sqlite3'
+        src=sqlite3.connect(src_path, timeout=15)
+        dst=sqlite3.connect(dst_path, timeout=15)
+        try:
+            src.backup(dst)
+            integrity=dst.execute('PRAGMA integrity_check').fetchone()[0]
+            if integrity!='ok': raise RuntimeError(f'backup integrity check failed for {domain}: {integrity}')
+            backed_up.append({'domain':domain,'bytes':dst_path.stat().st_size,'integrity':integrity})
+        finally:
+            dst.close(); src.close()
+    return {'status':'ok','backup_dir':str(target_root),'databases':backed_up,'verified_at':now()}

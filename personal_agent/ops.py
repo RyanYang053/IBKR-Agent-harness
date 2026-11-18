@@ -1,4 +1,5 @@
 """Stateful Workflow Engine, Human-in-the-Loop Approvals, Privacy-Safe Observability, and Evaluation Harness."""
+from datetime import datetime, timezone
 from decimal import Decimal
 import functools, json, os, tempfile, time, uuid
 from pathlib import Path
@@ -159,36 +160,55 @@ def _save_run(run_id, workflow_id, status, current_step, completed_steps, pendin
             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)''',
             (run_id,workflow_id,status,current_step,json.dumps(completed_steps),1 if pending_approval else 0,retries,json.dumps(inputs_meta,ensure_ascii=False),json.dumps(checkpoint,ensure_ascii=False,default=str),json.dumps(proposed_action,ensure_ascii=False) if proposed_action else None,1 if acceptance_passed else 0,created,stamp))
 
-def run_workflow(workflow_id, params=None):
-    """Execute a structured multi-stage investment workflow with intermediate validation and durable state checkpoints."""
+def run_workflow(workflow_id, params=None, resume_run_id=None):
+    """Execute a structured multi-stage investment workflow with step-by-step durable SQLite checkpoints and safe crash-resume."""
     t0=time.perf_counter()
     if workflow_id not in WORKFLOW_SPECS: raise ValueError('unknown workflow_id')
     p=params if isinstance(params, dict) else (json.loads(params) if isinstance(params, str) and params.strip() else {})
-    run_id='wf_'+uuid.uuid4().hex[:12]
-    done=['intake_validate']
+    if resume_run_id:
+        prior=get_workflow_run(resume_run_id)
+        if prior.get('status')=='not_found': raise ValueError('resume_run_id not found')
+        if prior.get('workflow_id')!=workflow_id: raise ValueError('workflow_id mismatch on resume')
+        run_id=resume_run_id
+        done=list(prior['completed_steps'] or ['intake_validate'])
+        ckpt=dict(prior['checkpoint'] or {})
+        with db('ops') as c:
+            c.execute('UPDATE workflow_runs SET retry_count=retry_count+1, updated_at=? WHERE run_id=?',(now(),run_id))
+    else:
+        run_id='wf_'+uuid.uuid4().hex[:12]
+        done=['intake_validate']
+        ckpt={}
+        _save_run(run_id, workflow_id, 'running', 'intake_validate', done, False, {'workflow':workflow_id}, ckpt, None, False)
+
+    def _ckpt(step_name, key=None, val=None):
+        if key is not None: ckpt[key]=val
+        if step_name not in done: done.append(step_name)
+        _save_run(run_id, workflow_id, 'running', step_name, done, False, {'workflow':workflow_id}, ckpt, None, False)
 
     if workflow_id=='morning_portfolio_review':
-        brief=report.daily_brief()
-        done.append('freshness_and_reconciliation_gate')
-        factor=decision.portfolio_factor_risk('QQQ', 90)
-        done.extend(['capital_and_risk_aggregation','covariance_and_factor_scan','tax_and_superficial_loss_scan','behavioral_guardrail_injection'])
+        if 'brief' not in ckpt:
+            _ckpt('freshness_and_reconciliation_gate', 'brief', report.daily_brief())
+        if 'factor_risk_headline' not in ckpt:
+            factor=decision.portfolio_factor_risk('QQQ', 90)
+            ckpt['factor_risk_headline']=factor.get('portfolio_metrics') if factor.get('status')=='ok' else {'status':factor.get('status')}
+            ckpt['high_correlation_clusters']=(factor.get('high_correlation_clusters') or [])[:5]
+            done.extend([s for s in ('capital_and_risk_aggregation','covariance_and_factor_scan','tax_and_superficial_loss_scan','behavioral_guardrail_injection') if s not in done])
+            _save_run(run_id, workflow_id, 'running', 'behavioral_guardrail_injection', done, False, {'workflow':workflow_id}, ckpt, None, False)
+        brief=ckpt['brief']
         ok=brief.get('status') in {'ok','partial_or_stale'}
-        done.append('acceptance_verification')
-        checkpoint={
-            'brief':brief,
-            'factor_risk_headline':factor.get('portfolio_metrics') if factor.get('status')=='ok' else {'status':factor.get('status')},
-            'high_correlation_clusters':(factor.get('high_correlation_clusters') or [])[:5],
-            'acceptance':{'passed':ok,'advice_allowed':brief.get('advice_allowed')}
-        }
-        _save_run(run_id, workflow_id, 'completed', 'acceptance_verification', done, False, {'workflow':workflow_id}, checkpoint, None, ok)
-        record_span('workflow', workflow_id, 'ok', (time.perf_counter()-t0)*1000.0, len(json.dumps(checkpoint))//4)
-        return {'run_id':run_id,'workflow_id':workflow_id,'status':'completed','completed_steps':done,'pending_approval':False,'acceptance_passed':ok,'result':checkpoint}
+        if 'acceptance_verification' not in done: done.append('acceptance_verification')
+        ckpt['acceptance']={'passed':ok,'advice_allowed':brief.get('advice_allowed')}
+        _save_run(run_id, workflow_id, 'completed', 'acceptance_verification', done, False, {'workflow':workflow_id}, ckpt, None, ok)
+        record_span('workflow', workflow_id, 'ok', (time.perf_counter()-t0)*1000.0, len(json.dumps(ckpt))//4)
+        return {'run_id':run_id,'workflow_id':workflow_id,'status':'completed','completed_steps':done,'pending_approval':False,'acceptance_passed':ok,'result':ckpt}
 
     if workflow_id=='equity_valuation_and_expectations':
         sym=str(p.get('symbol') or '').strip().upper()
         if not sym: raise ValueError('symbol is required for equity_valuation_and_expectations')
-        brief=decision.stock_brief(sym)
-        done.extend(['load_holdings_and_peer_correlation','load_edgar_and_market_context'])
+        if 'stock_brief' not in ckpt:
+            _ckpt('load_holdings_and_peer_correlation', 'stock_brief', decision.stock_brief(sym))
+            _ckpt('load_edgar_and_market_context')
+        brief=ckpt['stock_brief']
         fcff=str(p.get('fcff') or '').strip()
         wacc=str(p.get('wacc') or '0.10').strip()
         g1=str(p.get('stage1_growth') or '0.15').strip()
@@ -197,27 +217,30 @@ def run_workflow(workflow_id, params=None):
         shares=str(p.get('shares') or '').strip()
         ref_px=str(p.get('reference_price') or '').strip()
         years=int(p.get('years') or 5)
-        ms_dcf=None; rev_dcf=None; sanity_warnings=[]
-        if fcff and shares:
-            ms_dcf=decision.multi_stage_dcf(fcff, wacc, g1, gt, debt, shares, years=years, fade=True, symbol=sym, fetch_live=False)
-            rev_dcf=decision.reverse_dcf(fcff, wacc, gt, debt, shares, reference_price=ref_px, symbol=sym, years=years, fade=True)
-            if ms_dcf.get('terminal_share_of_ev') and Decimal(ms_dcf['terminal_share_of_ev'])>Decimal('0.80'):
-                sanity_warnings.append('terminal_value_dominates_ev_over_80pct')
-            if ms_dcf.get('price_freshness')!='live':
-                sanity_warnings.append('quote_not_live_upside_withheld')
-        done.extend(['run_multi_stage_and_reverse_dcf','intermediate_sanity_validation','red_team_and_guardrail_check'])
+        if 'multi_stage_dcf' not in ckpt:
+            ms_dcf=None; rev_dcf=None; sanity_warnings=[]
+            if fcff and shares:
+                ms_dcf=decision.multi_stage_dcf(fcff, wacc, g1, gt, debt, shares, years=years, fade=True, symbol=sym, fetch_live=False)
+                rev_dcf=decision.reverse_dcf(fcff, wacc, gt, debt, shares, reference_price=ref_px, symbol=sym, years=years, fade=True)
+                if ms_dcf.get('terminal_share_of_ev') and Decimal(ms_dcf['terminal_share_of_ev'])>Decimal('0.80'):
+                    sanity_warnings.append('terminal_value_dominates_ev_over_80pct')
+                if ms_dcf.get('price_freshness')!='live':
+                    sanity_warnings.append('quote_not_live_upside_withheld')
+            ckpt['multi_stage_dcf']=ms_dcf; ckpt['reverse_dcf']=rev_dcf; ckpt['intermediate_sanity_warnings']=sanity_warnings
+            for stp in ('run_multi_stage_and_reverse_dcf','intermediate_sanity_validation','red_team_and_guardrail_check'):
+                if stp not in done: done.append(stp)
+            _save_run(run_id, workflow_id, 'running', 'red_team_and_guardrail_check', done, False, {'symbol':sym,'has_dcf':bool(ms_dcf)}, ckpt, None, False)
         thesis_text=str(p.get('propose_thesis') or '').strip()
         falsifier=str(p.get('falsifier') or '').strip()
         conf=str(p.get('confidence') or '').strip()
         proposed=None; status='completed'; cur_step='stage_thesis_or_deliver'; pending=False
         if thesis_text:
-            if not falsifier: sanity_warnings.append('proposed_thesis_missing_explicit_falsifier')
+            if not falsifier: ckpt['intermediate_sanity_warnings'].append('proposed_thesis_missing_explicit_falsifier')
             proposed={'kind':'save_journal','symbol':sym,'thesis':thesis_text,'falsifier':falsifier,'confidence':conf}
             status='awaiting_approval'; cur_step='awaiting_human_approval'; pending=True
-        checkpoint={'stock_brief':brief,'multi_stage_dcf':ms_dcf,'reverse_dcf':rev_dcf,'intermediate_sanity_warnings':sanity_warnings}
-        _save_run(run_id, workflow_id, status, cur_step, done, pending, {'symbol':sym,'has_dcf':bool(ms_dcf),'staged_thesis':pending}, checkpoint, proposed, True)
-        record_span('workflow', workflow_id, 'ok', (time.perf_counter()-t0)*1000.0, len(json.dumps(checkpoint))//4)
-        return {'run_id':run_id,'workflow_id':workflow_id,'status':status,'current_step':cur_step,'completed_steps':done,'pending_approval':pending,'proposed_approval':proposed,'result':checkpoint}
+        _save_run(run_id, workflow_id, status, cur_step, done, pending, {'symbol':sym,'has_dcf':bool(ckpt.get('multi_stage_dcf')),'staged_thesis':pending}, ckpt, proposed, True)
+        record_span('workflow', workflow_id, 'ok', (time.perf_counter()-t0)*1000.0, len(json.dumps(ckpt))//4)
+        return {'run_id':run_id,'workflow_id':workflow_id,'status':status,'current_step':cur_step,'completed_steps':done,'pending_approval':pending,'proposed_approval':proposed,'result':ckpt}
 
     if workflow_id=='tax_aware_pre_trade_approval':
         sym=str(p.get('symbol') or '').strip().upper()
@@ -228,10 +251,15 @@ def run_workflow(workflow_id, params=None):
         falsifier=str(p.get('falsifier') or '').strip()
         conf=str(p.get('confidence') or '').strip()
         if not sym or not amt: raise ValueError('symbol and amount_base are required')
-        gate=decision.evaluate_trade_gate(sym, act, amt, acct)
-        done.append('six_point_pre_trade_gate')
-        stress=decision.factor_stress_test('-0.15', '0.02', 'QQQ', acct if acct in {a['account'] for a in (finance.portfolio().get('accounts') or [])} else None)
-        done.extend(['beta_and_fx_stress_delta','canadian_tax_verification'])
+        if 'pre_trade_gate' not in ckpt:
+            _ckpt('six_point_pre_trade_gate', 'pre_trade_gate', decision.evaluate_trade_gate(sym, act, amt, acct))
+        gate=ckpt['pre_trade_gate']
+        if 'portfolio_stress_context' not in ckpt:
+            stress=decision.factor_stress_test('-0.15', '0.02', 'QQQ', acct if acct in {a['account'] for a in (finance.portfolio().get('accounts') or [])} else None)
+            ckpt['portfolio_stress_context']={'pnl_impact_base':stress.get('portfolio_pnl_impact_base'),'nav_impact_pct':stress.get('portfolio_nav_impact_pct')}
+            for stp in ('beta_and_fx_stress_delta','canadian_tax_verification'):
+                if stp not in done: done.append(stp)
+        g_verd=gate.get('verdict') or gate.get('status','blocked')
         proposed={
             'kind':'approved_trade_plan',
             'symbol':sym,
@@ -241,19 +269,26 @@ def run_workflow(workflow_id, params=None):
             'thesis':thesis_text or f'{act} {sym} pre-trade gated plan',
             'falsifier':falsifier,
             'confidence':conf,
-            'gate_verdict':gate.get('verdict') or gate.get('status','blocked'),
+            'gate_verdict':g_verd,
+            'staged_portfolio_as_of':gate.get('portfolio_as_of'),
+            'staged_portfolio_nav':gate.get('portfolio_nav'),
+            'staged_policy_hash':gate.get('policy_hash'),
             'orders':'disabled_manual_broker_execution_only'
         }
-        checkpoint={'pre_trade_gate':gate,'portfolio_stress_context':{'pnl_impact_base':stress.get('portfolio_pnl_impact_base'),'nav_impact_pct':stress.get('portfolio_nav_impact_pct')}}
         status='awaiting_approval'; cur_step='awaiting_human_approval'
-        _save_run(run_id, workflow_id, status, cur_step, done, True, {'symbol':sym,'action':act,'account':acct}, checkpoint, proposed, (gate.get('verdict') or gate.get('status')) not in {'blocked','blocked_stale_ledger'})
-        record_span('workflow', workflow_id, 'ok', (time.perf_counter()-t0)*1000.0, len(json.dumps(checkpoint))//4)
-        return {'run_id':run_id,'workflow_id':workflow_id,'status':status,'current_step':cur_step,'completed_steps':done,'pending_approval':True,'proposed_approval':proposed,'result':checkpoint}
+        acc_ok=g_verd in {'clear','caution_review_flags'}
+        _save_run(run_id, workflow_id, status, cur_step, done, True, {'symbol':sym,'action':act,'account':acct,'staged_nav':gate.get('portfolio_nav'),'staged_policy_hash':gate.get('policy_hash')}, ckpt, proposed, acc_ok)
+        record_span('workflow', workflow_id, 'ok', (time.perf_counter()-t0)*1000.0, len(json.dumps(ckpt))//4)
+        return {'run_id':run_id,'workflow_id':workflow_id,'status':status,'current_step':cur_step,'completed_steps':done,'pending_approval':True,'proposed_approval':proposed,'result':ckpt}
 
     if workflow_id=='recursive_behavioral_post_mortem':
         sym=str(p.get('symbol') or '').strip().upper() or None
-        loop=decision.improvement_loop(sym)
-        done.extend(['ledger_execution_telemetry','thesis_drift_and_brier_calibration','recurring_mistake_diagnosis'])
+        if 'loop_result' not in ckpt:
+            ckpt['loop_result']=decision.improvement_loop(sym)
+            for stp in ('ledger_execution_telemetry','thesis_drift_and_brier_calibration','recurring_mistake_diagnosis'):
+                if stp not in done: done.append(stp)
+            _save_run(run_id, workflow_id, 'running', 'recurring_mistake_diagnosis', done, False, {'symbol':sym}, ckpt, None, False)
+        loop=ckpt['loop_result']
         rule_title=str(p.get('propose_rule_title') or '').strip()
         rule_detail=str(p.get('propose_rule_detail') or '').strip()
         rule_action=str(p.get('propose_action_rule') or '').strip()
@@ -270,8 +305,12 @@ def run_workflow(workflow_id, params=None):
     if workflow_id=='sec_filing_delta_red_flag':
         sym=str(p.get('symbol') or '').strip().upper()
         if not sym: raise ValueError('symbol is required for sec_filing_delta_red_flag')
-        audit=decision.filing_red_flag_audit(sym, include_private=True)
-        done.extend(['xbrl_accrual_and_dilution_forensics','consecutive_filing_paragraph_diff','modal_escalation_and_lexicon_scan','cross_check_portfolio_exposure'])
+        if 'audit_result' not in ckpt:
+            ckpt['audit_result']=decision.filing_red_flag_audit(sym, include_private=True)
+            for stp in ('xbrl_accrual_and_dilution_forensics','consecutive_filing_paragraph_diff','modal_escalation_and_lexicon_scan','cross_check_portfolio_exposure'):
+                if stp not in done: done.append(stp)
+            _save_run(run_id, workflow_id, 'running', 'cross_check_portfolio_exposure', done, False, {'symbol':sym}, ckpt, None, False)
+        audit=ckpt['audit_result']
         stage_alert=bool(p.get('stage_alert')) or (bool(audit.get('red_flags')) and bool((audit.get('portfolio_context') or {}).get('held')) and p.get('auto_stage_if_held', False))
         alert_rule=str(p.get('action_rule') or '').strip()
         proposed=None; status='completed'; cur_step='stage_falsifier_alert_or_deliver'; pending=False
@@ -293,8 +332,12 @@ def run_workflow(workflow_id, params=None):
     if workflow_id=='counterfactual_decision_attribution':
         days=int(p.get('days') or 90)
         acct=str(p.get('account') or '').strip() or None
-        attrib=decision.counterfactual_attribution(days=days, account=acct)
-        done.extend(['reconstruct_window_executions','mark_open_and_closed_positions','decompose_buy_vs_sell_alpha_and_friction','rank_best_and_costliest_decisions'])
+        if 'attrib_result' not in ckpt:
+            ckpt['attrib_result']=decision.counterfactual_attribution(days=days, account=acct)
+            for stp in ('reconstruct_window_executions','mark_open_and_closed_positions','decompose_buy_vs_sell_alpha_and_friction','rank_best_and_costliest_decisions'):
+                if stp not in done: done.append(stp)
+            _save_run(run_id, workflow_id, 'running', 'rank_best_and_costliest_decisions', done, False, {'days':days,'account':acct}, ckpt, None, False)
+        attrib=ckpt['attrib_result']
         rule_title=str(p.get('propose_rule_title') or '').strip()
         rule_action=str(p.get('propose_action_rule') or '').strip()
         proposed=None; status='completed'; cur_step='stage_habit_lesson_or_deliver'; pending=False
@@ -313,33 +356,30 @@ def run_workflow(workflow_id, params=None):
         return {'run_id':run_id,'workflow_id':workflow_id,'status':status,'current_step':cur_step,'completed_steps':done,'pending_approval':pending,'proposed_approval':proposed,'result':attrib}
 
     if workflow_id=='investment_committee_memo':
+        if not resume_run_id: done=[]
         sym=str(p.get('symbol') or '').strip().upper()
         amt=str(p.get('amount_base') or '2500').strip()
         act=str(p.get('action') or 'BUY').strip().upper()
         acct=str(p.get('account') or 'taxable').strip()
         if not sym: raise ValueError('symbol is required for investment_committee_memo')
-        s1_research={'stock_brief':decision.stock_brief(sym),'filing_forensics':decision.filing_red_flag_audit(sym, include_private=True),'living_thesis':quant.get_living_thesis(sym)}
-        done=['1_research_and_edgar_forensics']
-        s2_expect=quant.evaluate_expectation_gap(sym)
-        done.append('2_market_expectations_and_gap')
-        s3_val=None
-        if p.get('revenue_t0') and p.get('shares'):
-            s3_val=quant.driver_based_valuation(p['revenue_t0'], p.get('rev_cagr_base','0.15'), p.get('op_margin_target','0.25'), wacc=p.get('wacc','0.10'), terminal_growth=p.get('terminal_growth','0.025'), net_debt=p.get('net_debt','0'), shares=p['shares'], symbol=sym)
-        done.append('3_driver_and_reverse_valuation')
-        s4_gate=decision.evaluate_trade_gate(sym, act, amt, acct)
-        done.append('4_red_team_and_mistake_guardrails')
-        s5_policy=quant.policy_compliance()
-        done.append('5_portfolio_and_policy_impact')
-        s6_alloc=quant.allocate_incremental_capital(amt, candidates=[sym, quant.load_policy().get('core_benchmark','QQQ')])
-        done.extend(['6_opportunity_cost_vs_qqq_and_cash','7_sizing_and_account_location'])
-        memo={
-            '1_research_case':s1_research,
-            '2_market_expectations':s2_expect,
-            '3_valuation_scenarios':s3_val,
-            '4_red_team_and_gate':s4_gate,
-            '5_policy_compliance':s5_policy.get('exposure_summary'),
-            '6_and_7_alternatives_and_allocation':s6_alloc
-        }
+        if '1_research_case' not in ckpt:
+            _ckpt('1_research_and_edgar_forensics', '1_research_case', {'stock_brief':decision.stock_brief(sym),'filing_forensics':decision.filing_red_flag_audit(sym, include_private=True),'living_thesis':quant.get_living_thesis(sym)})
+        if '2_market_expectations' not in ckpt:
+            _ckpt('2_market_expectations_and_gap', '2_market_expectations', quant.evaluate_expectation_gap(sym))
+        if '3_valuation_scenarios' not in ckpt:
+            s3_val=None
+            if p.get('revenue_t0') and p.get('shares'):
+                s3_val=quant.driver_based_valuation(p['revenue_t0'], p.get('rev_cagr_base','0.15'), p.get('op_margin_target','0.25'), wacc=p.get('wacc','0.10'), terminal_growth=p.get('terminal_growth','0.025'), net_debt=p.get('net_debt','0'), shares=p['shares'], symbol=sym)
+            _ckpt('3_driver_and_reverse_valuation', '3_valuation_scenarios', s3_val)
+        if '4_red_team_and_gate' not in ckpt:
+            _ckpt('4_red_team_and_mistake_guardrails', '4_red_team_and_gate', decision.evaluate_trade_gate(sym, act, amt, acct))
+        if '5_policy_compliance' not in ckpt:
+            _ckpt('5_portfolio_and_policy_impact', '5_policy_compliance', quant.policy_compliance().get('exposure_summary'))
+        if '6_and_7_alternatives_and_allocation' not in ckpt:
+            s6_alloc=quant.allocate_incremental_capital(amt, candidates=[sym, quant.load_policy().get('core_benchmark','QQQ')])
+            if '6_opportunity_cost_vs_qqq_and_cash' not in done: done.append('6_opportunity_cost_vs_qqq_and_cash')
+            _ckpt('7_sizing_and_account_location', '6_and_7_alternatives_and_allocation', s6_alloc)
+        s4_gate=ckpt['4_red_team_and_gate']
         g_verd=s4_gate.get('verdict') or s4_gate.get('status','blocked')
         proposed={
             'kind':'approved_trade_plan',
@@ -351,11 +391,22 @@ def run_workflow(workflow_id, params=None):
             'falsifier':str(p.get('falsifier') or ''),
             'confidence':str(p.get('confidence') or ''),
             'gate_verdict':g_verd,
+            'staged_portfolio_as_of':s4_gate.get('portfolio_as_of'),
+            'staged_portfolio_nav':s4_gate.get('portfolio_nav'),
+            'staged_policy_hash':s4_gate.get('policy_hash'),
             'orders':'disabled_manual_broker_execution_only'
         }
-        _save_run(run_id, workflow_id, 'awaiting_approval', '8_awaiting_human_committee_approval', done, True, {'symbol':sym,'action':act,'amount_base':amt}, memo, proposed, g_verd not in {'blocked','blocked_stale_ledger'})
-        record_span('workflow', workflow_id, 'ok', (time.perf_counter()-t0)*1000.0, len(json.dumps(memo))//4)
-        return {'run_id':run_id,'workflow_id':workflow_id,'status':'awaiting_approval','current_step':'8_awaiting_human_committee_approval','completed_steps':done,'pending_approval':True,'proposed_approval':proposed,'result':memo}
+        acc_ok=g_verd in {'clear','caution_review_flags'}
+        _save_run(run_id, workflow_id, 'awaiting_approval', '8_awaiting_human_committee_approval', done, True, {'symbol':sym,'action':act,'amount_base':amt,'staged_nav':s4_gate.get('portfolio_nav'),'staged_policy_hash':s4_gate.get('policy_hash')}, ckpt, proposed, acc_ok)
+        record_span('workflow', workflow_id, 'ok', (time.perf_counter()-t0)*1000.0, len(json.dumps(ckpt))//4)
+        return {'run_id':run_id,'workflow_id':workflow_id,'status':'awaiting_approval','current_step':'8_awaiting_human_committee_approval','completed_steps':done,'pending_approval':True,'proposed_approval':proposed,'result':ckpt}
+
+def resume_workflow(run_id, params=None):
+    """Resume an interrupted workflow run from its latest durable SQLite checkpoint."""
+    state=get_workflow_run(run_id)
+    if state.get('status')=='not_found': raise ValueError('workflow run not found')
+    if state['status']!='running': raise ValueError(f"workflow run is in status={state['status']}, not resumable running state")
+    return run_workflow(state['workflow_id'], params=params, resume_run_id=run_id)
 
 def get_workflow_run(run_id):
     with db('ops') as c:
@@ -385,12 +436,48 @@ def list_workflow_runs(status=None, limit=20):
     return out
 
 def approve_workflow(run_id, operator_note=''):
-    """Human-in-the-Loop Resume-After-Approval: commits staged thesis/guardrail/plan into durable memory and marks run completed. Never places broker orders."""
+    """Human-in-the-Loop Resume-After-Approval: enforces TTL, idempotency, data-version binding, and live gate re-validation before committing."""
     state=get_workflow_run(run_id)
     if state.get('status')=='not_found': raise ValueError('workflow run not found')
+    checkpoint=dict(state['checkpoint'])
+    # Idempotent return if already approved
+    if state['status']=='completed' and (checkpoint.get('approval_resolution') or {}).get('decision')=='approved':
+        res=checkpoint['approval_resolution']
+        return {'run_id':run_id,'status':'completed','idempotent':True,'committed_memory_id':res.get('memory_id'),'orders':'disabled'}
     if state['status']!='awaiting_approval' or not state.get('proposed_action'):
         raise ValueError('workflow run is not awaiting approval')
     prop=state['proposed_action']
+
+    # TTL expiration check
+    ttl_hours=float(quant.load_policy().get('approval_ttl_hours', 48))
+    try:
+        staged_dt=datetime.fromisoformat(state['updated_at'])
+        age_hours=(datetime.now(timezone.utc)-staged_dt.astimezone(timezone.utc)).total_seconds()/3600.0
+        if age_hours>ttl_hours:
+            raise ValueError(f'approval expired ({age_hours:.1f}h > {ttl_hours}h TTL); re-run workflow')
+    except ValueError as ve:
+        if 'approval expired' in str(ve): raise
+
+    # Hard gate & data-version re-validation for trade plans
+    if prop['kind']=='approved_trade_plan':
+        if not state.get('acceptance_passed') or prop.get('gate_verdict') not in {'clear','caution_review_flags'}:
+            raise ValueError(f"cannot approve blocked trade plan (gate_verdict={prop.get('gate_verdict')}); resolve gate issues and re-run")
+        re_gate=decision.evaluate_trade_gate(prop['symbol'], prop['action'], prop['amount_base'], prop['account'])
+        re_verd=re_gate.get('verdict') or re_gate.get('status','blocked')
+        if re_verd not in {'clear','caution_review_flags'}:
+            raise ValueError(f'approval blocked on live re-validation: {re_verd}')
+        staged_pol=prop.get('staged_policy_hash')
+        if staged_pol and re_gate.get('policy_hash') and staged_pol!=re_gate.get('policy_hash'):
+            raise ValueError('investment policy changed since workflow staging; re-run workflow before approving')
+        staged_nav=prop.get('staged_portfolio_nav')
+        cur_nav=re_gate.get('portfolio_nav')
+        if staged_nav and cur_nav:
+            try:
+                if abs(float(cur_nav)-float(staged_nav))/max(1.0, float(staged_nav))>0.05:
+                    raise ValueError('portfolio NAV shifted >5% since workflow staging; re-run workflow before approving')
+            except ValueError as ve:
+                if 'shifted >5%' in str(ve): raise
+
     memory_id=None
     if prop['kind']=='save_journal':
         memory_id=knowledge.save_journal(prop['symbol'], prop['thesis'], 'workflow_human_approved', alternatives=operator_note, risk=prop.get('falsifier') or '', confidence=prop.get('confidence') or '')
@@ -402,7 +489,6 @@ def approve_workflow(run_id, operator_note=''):
         detail=prop['detail']+(' | Operator note: '+operator_note if operator_note else '')
         memory_id=knowledge.save_lesson(prop['lesson_kind'], prop['title'], detail, 'workflow_human_approved', symbol=prop.get('symbol') or '', action_rule=prop.get('action_rule') or '')
     done=list(state['completed_steps'])+['human_approved','committed_to_memory']
-    checkpoint=dict(state['checkpoint'])
     checkpoint['approval_resolution']={'decision':'approved','memory_id':memory_id,'operator_note':operator_note,'resolved_at':now(),'orders':'disabled'}
     _save_run(run_id, state['workflow_id'], 'completed', 'committed_to_memory', done, False, state['inputs_meta'], checkpoint, prop, True)
     return {'run_id':run_id,'status':'completed','committed_memory_id':memory_id,'orders':'disabled'}
