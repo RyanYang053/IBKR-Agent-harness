@@ -1,0 +1,37 @@
+[project]
+name = "ibkr-agent-harness"
+version = "0.2.0"
+description = "Local-first quantitative portfolio intelligence, stateful workflow harness, and privacy-segregated MCP control plane for Interactive Brokers."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+keywords = ["interactive-brokers", "ibkr", "mcp", "ai-agent", "agent-harness", "quantitative-finance", "dcf", "portfolio-risk", "local-llm", "rag"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Financial and Insurance Industry",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+  "mcp>=1.12,<2",
+  "streamlit>=1.40,<2",
+  "defusedxml>=0.7,<1",
+  "pypdf>=5,<7",
+  "openpyxl>=3.1,<4",
+  "websockets>=13",
+  "yfinance>=0.2.50,<1",
+]
+
+[project.scripts]
+ibkr-agent = "personal_agent.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["personal_agent*"]

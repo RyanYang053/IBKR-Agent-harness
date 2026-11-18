@@ -1,0 +1,28 @@
+{
+  "timezone": "America/New_York",
+  "knowledge_roots": [],
+  "finance": {
+    "accounts": {},
+    "account_tax_types": {},
+    "base_currency": "CAD",
+    "flex_queries": [
+      {
+        "token_env": "IBKR_FLEX_TOKEN",
+        "query_env": "IBKR_FLEX_QUERY_ID"
+      }
+    ],
+    "max_snapshot_age_days": 4
+  },
+  "market": {
+    "watchlist": ["QQQ", "SPY"],
+    "alpaca_key_env": "ALPACA_API_KEY",
+    "alpaca_secret_env": "ALPACA_API_SECRET",
+    "finnhub_key_env": "FINNHUB_API_KEY",
+    "fred_key_env": "FRED_API_KEY",
+    "edgar_contact": ""
+  },
+  "policy": {
+    "max_file_bytes": 10000000,
+    "max_tool_rows": 50
+  }
+}

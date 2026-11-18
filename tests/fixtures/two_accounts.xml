@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<FlexQueryResponse>
+  <FlexStatements>
+    <FlexStatement accountId="U0000001" fromDate="20240101" toDate="20240102">
+      <EquitySummaryByReportDateInBase currency="CAD" reportDate="20240101" total="1000.00" cash="1000.00"/>
+      <EquitySummaryByReportDateInBase currency="CAD" reportDate="20240102" total="900.00" cash="900.00"/>
+      <OpenPositions>
+        <OpenPosition levelOfDetail="SUMMARY" reportDate="20240102" conid="1001" currency="CAD" symbol="CASH" assetCategory="CASH" position="900" positionValue="900"/>
+      </OpenPositions>
+      <CashTransactions>
+        <CashTransaction transactionID="T1" type="Internal Transfer" dateTime="20240102" currency="CAD" amount="-100.00"/>
+      </CashTransactions>
+    </FlexStatement>
+    <FlexStatement accountId="U0000002" fromDate="20240101" toDate="20240102">
+      <EquitySummaryByReportDateInBase currency="CAD" reportDate="20240101" total="1000.00" cash="1000.00"/>
+      <EquitySummaryByReportDateInBase currency="CAD" reportDate="20240102" total="1100.00" cash="1100.00"/>
+      <OpenPositions>
+        <OpenPosition levelOfDetail="SUMMARY" reportDate="20240102" conid="1002" currency="CAD" symbol="CASH" assetCategory="CASH" position="1100" positionValue="1100"/>
+      </OpenPositions>
+      <CashTransactions>
+        <CashTransaction transactionID="T2" type="Internal Transfer" dateTime="20240102" currency="CAD" amount="100.00"/>
+      </CashTransactions>
+    </FlexStatement>
+  </FlexStatements>
+</FlexQueryResponse>

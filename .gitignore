@@ -1,0 +1,30 @@
+# Virtual environments & build artifacts
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Private local data, brokerage statements, SQLite ledgers, and reports
+local/
+*.sqlite*
+*.db
+*.xml
+!tests/fixtures/*.xml
+
+# Local configs, credentials, and secrets (NEVER commit)
+.env*
+*.key
+*.pem
+config/personal.json
+config/*.local.yml
+config/*.local.json
+
+# Editor & OS metadata
+.cursor/
+.vscode/
+.DS_Store
+Thumbs.db
+*.log

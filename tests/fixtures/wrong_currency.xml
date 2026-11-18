@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<FlexQueryResponse>
+  <FlexStatements>
+    <FlexStatement accountId="U0000001" fromDate="20240102" toDate="20240102">
+      <EquitySummaryByReportDateInBase currency="USD" reportDate="20240102" total="900.00" cash="900.00"/>
+    </FlexStatement>
+  </FlexStatements>
+</FlexQueryResponse>

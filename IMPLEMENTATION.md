@@ -1,0 +1,21 @@
+# Architecture & Invariants Specification
+
+## 1. Design Scope & Non-Negotiable Invariants
+`ibkr-agent-harness` implements a local-first Quantitative Portfolio Intelligence & Stateful Agentic Decision Harness over Interactive Brokers Activity Flex XML statements, multi-provider public market feeds, and local SQLite storage:
+
+1. **Strict Separation of Deterministic Ledger and Probabilistic LLMs:** Every net-asset-value (NAV) reconciliation, cross-account transfer pairing, daily-approximation return, bisection XIRR, sample covariance matrix, multi-stage/reverse DCF valuation, tax-lot attribution, and behavioral habit metric is computed in deterministic Python (`Decimal` and exact sample statistics). Domain modules never invoke an LLM.
+2. **Read-Only MCP Boundary & Credential Scrubbing:** Stdio MCP servers (`investment`, `investment --public-only`, and `knowledge`) expose read-only query, valuation, risk, and workflow-staging tools. Brokerage Flex credentials and external market API keys live strictly in operator environment variables during CLI/scheduled sync runs and are never passed to MCP child processes or stored in tracked configuration.
+3. **Zero Order Execution:** Order placement and automated trading are disabled across all surfaces. Trade proposals and pre-trade workflows halt at `awaiting_approval` for human sign-off and manual broker execution.
+4. **Explicit Data Freshness State Machine:** Only an Alpaca Basic IEX quote younger than 90 seconds during New York pre-market, regular, or post-market sessions is classified as `live`. Delayed, closed-session, historical bar (`yfinance` / Alpaca 1Day), FRED macro, and central-bank daily FX series retain explicit non-live labels and never silently substitute for a live quote.
+5. **Dual-Plane Cloud DLP Isolation:** Private brokerage balances, account aliases, tax lots, and personal memory remain bound to local inference (`personal-investment` preset). When routing complex public equity research to external Cloud LLM APIs, `--public-only` physically omits all `finance.sqlite3` and personal memory tools from the MCP server process.
+
+## 2. Storage Domains (`local/*.sqlite3`)
+- `finance.sqlite3`: Immutable raw Flex XML SHA-256 archive tracking (`imports`, `sources`), base-currency daily NAV (`nav`), `ChangeInNAV` attribution (`nav_change`), same-date `SUMMARY` positions (`positions` keyed by `(account, date, conid)`), and identified detail `Trade`, `CashTransaction`, and `CorporateAction` rows (`records` with account/trader PII stripped).
+- `market.sqlite3`: Throttled provider cache for IEX quotes (`quotes`), incremental daily closes (`bars`), company news (`news`), earnings calendars (`earnings`), multi-year SEC EDGAR `10-K/20-F` XBRL facts (`filings`, `cik_map`), consecutive SEC `Item 1A` / `MD&A` filing sections (`filing_sections`), FRED series (`macro`), and Bank of Canada daily FX (`fx`).
+- `knowledge.sqlite3`: Allowlisted local research document index (`documents`, SQLite FTS5 `trigram` `chunks` with CJK substring fallback) and structured episodic/procedural memory (`memory`, `memory_fts` supporting `fact`, `preference`, `decision`, `procedure`, `mistake`, `lesson`, and `goal` records with `supersedes` and `resolved` lifecycle states).
+- `ops.sqlite3`: Durable stateful workflow checkpoints (`workflow_runs`), programmatic Human-in-the-Loop approval queue (`awaiting_approval` -> `approve_workflow` / `reject_workflow`), DLP-safe tool latency/token spans (`telemetry_spans`), and regression benchmark scorecards (`eval_runs`).
+
+## 3. Accounting & Quantitative Guards
+- **Multi-Account Date Alignment:** Combined portfolio metrics require every configured account to share one latest statement date and matching base currency; mismatched dates or unmatched internal transfers fail closed (`date_mismatch` / `unmatched_transfers`) and withhold combined return claims.
+- **Return Honesty:** Daily NAV boundaries without intraday cash-flow timestamps are explicitly reported as `twr_method: daily_approximation` (`twr_exact: false`).
+- **Jurisdiction-Aware Tax Logic:** Account buckets (`taxable`, `tfsa`, `rrsp`, `fhsa`) track statement-FX unrealized gains/losses, cross-account `30`-day superficial-loss collisions (Canadian ITA s.54), and unrecoverable US dividend withholding inside TFSA accounts.
