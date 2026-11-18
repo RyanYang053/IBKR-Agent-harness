@@ -609,16 +609,18 @@ def simulate_allocation(portfolio_snapshot, cash_contribution=0.0, proposed_trad
         else:
             if delta_v<0: raise ValueError(f'insufficient_account_position:unheld {sym} in {acct_t}')
             t_asset=str(tr.get('asset') or 'STK').upper()
+            mult_v=dec(tr.get('multiplier') or (100 if t_asset=='OPT' else 1))
+            fx_v=dec(tr['fx_rate_to_base']) if tr.get('fx_rate_to_base') is not None else Decimal(1)
             px_u=dec(tr['price_per_unit']) if tr.get('price_per_unit') not in (None,'') else None
-            est_qty=tr_qty if tr_qty is not None else ((amt/px_u) if (px_u and px_u>0) else Decimal(0))
+            est_qty=tr_qty if tr_qty is not None else ((amt/(px_u*mult_v*fx_v)) if (px_u and px_u>0 and mult_v>0 and fx_v>0) else Decimal(0))
             pos_list.append(PositionRecord(
                 account=acct_t, conid=cid or sym, symbol=sym, asset=t_asset,
                 currency=csnap.currency, quantity=est_qty,
-                multiplier=dec(tr.get('multiplier') or (100 if t_asset=='OPT' else 1)),
+                multiplier=mult_v,
                 market_value_base=delta_v,
                 underlying_price=dec(tr['underlying_price']) if tr.get('underlying_price') is not None else None,
                 underlying_currency=str(tr.get('underlying_currency') or csnap.currency).upper(),
-                fx_rate_to_base=dec(tr['fx_rate_to_base']) if tr.get('fx_rate_to_base') is not None else Decimal(1),
+                fx_rate_to_base=fx_v,
                 delta=dec(tr['delta']) if tr.get('delta') is not None else None,
             ))
     tot_nav=sum((a.nav for a in accts), Decimal(0))

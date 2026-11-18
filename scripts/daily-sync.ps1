@@ -36,6 +36,7 @@ $ErrorActionPreference = 'Continue'
 $flexCode = $LASTEXITCODE
 if ($flexCode -ne 0) { $ErrorActionPreference = $prevEap; Add-Content $log "$(Get-Date -Format o) sync failed; last snapshot kept"; exit 1 }
 & $python -m personal_agent.cli market-sync > $null 2>&1
+& $python -m personal_agent.cli run-monitoring > $null 2>&1
 & $python -m personal_agent.cli report > $null 2>&1
 $repCode = $LASTEXITCODE
 $ErrorActionPreference = $prevEap

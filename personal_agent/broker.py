@@ -171,12 +171,17 @@ def reconcile_live_to_flex():
     }
 
 class IBKRTWSAdapter(BrokerReadOnlyAdapter):
-    """Concrete Read-Only IBKR TWS / IB Gateway socket adapter using official ibapi when installed. Never implements order methods."""
+    """Concrete Read-Only IBKR TWS / IB Gateway socket adapter using official ibapi with callback completion events. Never implements order methods."""
     adapter_name='ibkr_tws_readonly'
     def __init__(self, host='127.0.0.1', port=7497, client_id=19, timeout_sec=5.0):
         self.host=str(host); self.port=int(port); self.client_id=int(client_id); self.timeout_sec=float(timeout_sec)
-        self._client=None; self._connected=False
-        self._accounts=[]; self._summary={}; self._positions=[]; self._contracts={}; self._quotes={}; self._greeks={}
+        self._client=None; self._connected=False; self._req_seq=9000
+        self._accounts=[]; self._summary={}; self._positions=[]; self._contracts={}; self._quotes={}; self._chains={}; self._greeks={}
+        self._events={}; self._incomplete_callbacks=[]
+
+    def _next_req_id(self):
+        self._req_seq+=1
+        return self._req_seq
 
     def connect(self):
         try:
@@ -194,20 +199,52 @@ class IBKRTWSAdapter(BrokerReadOnlyAdapter):
                 parent._accounts=[a.strip() for a in str(accountsList).split(',') if a.strip()]
                 done_evt.set()
             def accountSummary(self, reqId, account, tag, value, currency):
-                parent._summary.setdefault(account, {})[tag]=value
-                if currency: parent._summary[account]['currency']=currency
+                acct=parent._summary.setdefault(account, {})
+                acct[tag]={'value':value,'currency':currency or ''}
+                if tag in {'NetLiquidation','TotalCashValue','AvailableFunds','ExcessLiquidity','BuyingPower','InitMarginReq','MaintMarginReq'}:
+                    acct.setdefault('_raw', {})[tag]=value
+                if currency and 'currency' not in acct: acct['currency']=currency
+            def accountSummaryEnd(self, reqId):
+                ev=parent._events.get(('acct', reqId))
+                if ev: ev.set()
             def position(self, account, contract, position, avgCost):
-                parent._positions.append({'accountId':account,'conid':str(contract.conId),'symbol':contract.symbol,'asset':contract.secType,'currency':contract.currency,'position':str(position),'multiplier':contract.multiplier or '1'})
+                parent._positions.append({'accountId':account,'conid':str(contract.conId),'symbol':contract.symbol,'asset':contract.secType,'currency':contract.currency,'position':str(position),'multiplier':contract.multiplier or '1','exchange':contract.exchange or ''})
+            def positionEnd(self):
+                ev=parent._events.get(('pos', 0))
+                if ev: ev.set()
+            def contractDetails(self, reqId, contractDetails):
+                c=contractDetails.contract
+                parent._contracts[str(c.conId)]={'conid':str(c.conId),'symbol':c.symbol,'secType':c.secType,'currency':c.currency,'exchange':c.exchange,'multiplier':c.multiplier or '1','tradingClass':c.tradingClass or ''}
+            def contractDetailsEnd(self, reqId):
+                ev=parent._events.get(('cd', reqId))
+                if ev: ev.set()
+            def securityDefinitionOptionParameter(self, reqId, exchange, underlyingConId, tradingClass, multiplier, expirations, strikes):
+                parent._chains.setdefault(reqId, []).append({'exchange':exchange,'underlyingConId':str(underlyingConId),'tradingClass':tradingClass,'multiplier':multiplier,'expirations':sorted(expirations),'strikes':sorted(strikes)})
+            def securityDefinitionOptionParameterEnd(self, reqId):
+                ev=parent._events.get(('chain', reqId))
+                if ev: ev.set()
+            def tickPrice(self, reqId, tickType, price, attrib):
+                q=parent._quotes.setdefault(str(reqId), {})
+                if tickType==1: q['bid']=price
+                elif tickType==2: q['ask']=price
+                elif tickType==4: q['last']=price
+                elif tickType==9: q['close']=price
             def tickOptionComputation(self, reqId, tickType, tickAttrib, impliedVol, delta, optPrice, pvDividend, gamma, vega, theta, undPrice):
                 parent._greeks[str(reqId)]={'delta':delta,'gamma':gamma,'vega':vega,'theta':theta,'underlying_price':undPrice,'implied_vol':impliedVol,'status':'live' if delta is not None else 'unavailable'}
+            def tickSnapshotEnd(self, reqId):
+                ev=parent._events.get(('mkt', reqId))
+                if ev: ev.set()
             def error(self, reqId, errorCode, errorString, advancedOrderRejectJson=''):
                 if errorCode in {502, 504}: done_evt.set()
+                if errorCode in {354, 10167, 10168}:
+                    parent._incomplete_callbacks.append(f'mkt_entitlement_{errorCode}')
+                    ev=parent._events.get(('mkt', reqId))
+                    if ev: ev.set()
         app=_ReadOnlyApp()
         try:
             app.connect(self.host, self.port, self.client_id)
             t=threading.Thread(target=app.run, daemon=True); t.start()
-            done_evt.wait(self.timeout_sec)
-            if not app.isConnected():
+            if not done_evt.wait(self.timeout_sec) or not app.isConnected():
                 return {'status':'unavailable','reason':'tws_gateway_unreachable','host':self.host,'port':self.port,'live_verified':False,'readonly':True}
             self._client=app; self._connected=True
             return {'status':'connected','adapter':self.adapter_name,'readonly':True,'accounts':self._accounts}
@@ -215,36 +252,82 @@ class IBKRTWSAdapter(BrokerReadOnlyAdapter):
             return {'status':'unavailable','reason':f'tws_connect_failed:{type(exc).__name__}','live_verified':False,'readonly':True}
 
     def health(self):
-        return {'connected':self._connected,'adapter':self.adapter_name,'readonly':True,'host':self.host,'port':self.port,'entitlements':{'equities_live':self._connected,'options_greeks_live':False}}
+        has_live_greeks=any(g.get('status')=='live' for g in self._greeks.values())
+        return {'connected':self._connected,'adapter':self.adapter_name,'readonly':True,'host':self.host,'port':self.port,'partial':bool(self._incomplete_callbacks),'incomplete_callbacks':list(self._incomplete_callbacks),'entitlements':{'equities_live':self._connected and not any('354' in x for x in self._incomplete_callbacks),'options_greeks_live':has_live_greeks}}
 
     def list_managed_accounts(self):
         return list(self._accounts)
 
     def account_summary(self, account_id):
         if not self._connected or not self._client: raise RuntimeError('not connected to TWS')
-        import time as _t
-        self._client.reqAccountSummary(9001, 'All', 'NetLiquidation,TotalCashValue,AvailableFunds,ExcessLiquidity,BuyingPower,InitMarginReq,MaintMarginReq')
-        _t.sleep(min(1.5, self.timeout_sec))
-        return dict(self._summary.get(account_id, {}))
+        import threading
+        req_id=self._next_req_id()
+        ev=threading.Event(); self._events[('acct', req_id)]=ev
+        self._client.reqAccountSummary(req_id, 'All', 'NetLiquidation,TotalCashValue,AvailableFunds,ExcessLiquidity,BuyingPower,InitMarginReq,MaintMarginReq')
+        completed=ev.wait(self.timeout_sec)
+        try: self._client.cancelAccountSummary(req_id)
+        except Exception: pass
+        if not completed: self._incomplete_callbacks.append(f'accountSummary_timeout_{req_id}')
+        raw_acct=dict(self._summary.get(account_id, {}))
+        flat={k:(v['value'] if isinstance(v,dict) else v) for k,v in raw_acct.items() if k!='_raw'}
+        flat['tag_currencies']={k:v.get('currency','') for k,v in raw_acct.items() if isinstance(v,dict)}
+        flat['complete']=completed
+        return flat
 
     def positions(self):
         if not self._connected or not self._client: raise RuntimeError('not connected to TWS')
-        import time as _t
+        import threading
         self._positions.clear()
+        ev=threading.Event(); self._events[('pos', 0)]=ev
         self._client.reqPositions()
-        _t.sleep(min(1.5, self.timeout_sec))
+        completed=ev.wait(self.timeout_sec)
+        try: self._client.cancelPositions()
+        except Exception: pass
+        if not completed: self._incomplete_callbacks.append('positions_timeout')
         return list(self._positions)
 
     def contract_details(self, conid):
+        if str(conid) in self._contracts:
+            return dict(self._contracts[str(conid)])
+        if not self._connected or not self._client: return {}
+        import threading
+        from ibapi.contract import Contract
+        c=Contract(); c.conId=int(conid)
+        req_id=self._next_req_id()
+        ev=threading.Event(); self._events[('cd', req_id)]=ev
+        self._client.reqContractDetails(req_id, c)
+        if not ev.wait(self.timeout_sec): self._incomplete_callbacks.append(f'contractDetails_timeout_{conid}')
         return dict(self._contracts.get(str(conid), {}))
 
     def quotes(self, conids):
-        return {str(c):dict(self._quotes[str(c)]) for c in conids if str(c) in self._quotes}
+        if not self._connected or not self._client: return {}
+        import threading
+        from ibapi.contract import Contract
+        out={}
+        for cid in conids:
+            req_id=self._next_req_id()
+            c=Contract(); c.conId=int(cid); c.exchange='SMART'
+            ev=threading.Event(); self._events[('mkt', req_id)]=ev
+            self._client.reqMktData(req_id, c, '', True, False, [])
+            if not ev.wait(self.timeout_sec): self._incomplete_callbacks.append(f'quote_timeout_{cid}')
+            try: self._client.cancelMktData(req_id)
+            except Exception: pass
+            if str(req_id) in self._quotes: out[str(cid)]=dict(self._quotes[str(req_id)])
+            if str(req_id) in self._greeks: self._greeks[str(cid)]=dict(self._greeks[str(req_id)])
+        return out
 
-    def option_chain(self, symbol):
-        return []
+    def option_chain(self, symbol, underlying_conid=0):
+        if not self._connected or not self._client or not underlying_conid: return []
+        import threading
+        req_id=self._next_req_id()
+        ev=threading.Event(); self._events[('chain', req_id)]=ev
+        self._client.reqSecDefOptParams(req_id, str(symbol).upper(), '', 'STK', int(underlying_conid))
+        if not ev.wait(self.timeout_sec): self._incomplete_callbacks.append(f'chain_timeout_{symbol}')
+        return list(self._chains.get(req_id, []))
 
     def option_greeks(self, conid):
+        if str(conid) not in self._greeks and self._connected:
+            self.quotes([conid])
         return dict(self._greeks.get(str(conid), {'conid':str(conid),'status':'unavailable','delta':None}))
 
     def disconnect(self):
@@ -254,7 +337,7 @@ class IBKRTWSAdapter(BrokerReadOnlyAdapter):
         self._connected=False
 
 def sync_broker_live(host='127.0.0.1', port=7497, client_id=19):
-    """Attempt read-only live TWS/IB Gateway sync; fails closed with explicit reason if unreachable."""
+    """Attempt read-only live TWS/IB Gateway sync; fails closed and never sets live_verified=True on partial/unreachable state."""
     bcfg=(config().get('finance') or {}).get('broker') or {}
     adapter=IBKRTWSAdapter(bcfg.get('host', host), bcfg.get('port', port), bcfg.get('client_id', client_id))
     conn=adapter.connect()
@@ -263,10 +346,13 @@ def sync_broker_live(host='127.0.0.1', port=7497, client_id=19):
     try:
         accts={aid:adapter.account_summary(aid) for aid in adapter.list_managed_accounts()}
         pos=adapter.positions()
-        greeks={str(p['conid']):adapter.option_greeks(p['conid']) for p in pos if str(p.get('asset','')).upper()=='OPT'}
+        opt_cids=[p['conid'] for p in pos if str(p.get('asset','')).upper()=='OPT']
+        if opt_cids: adapter.quotes(opt_cids)
+        greeks={str(cid):adapter.option_greeks(cid) for cid in opt_cids}
         h=adapter.health()
+        live_ok=bool(h['connected'] and not h['partial'])
         sid=_persist_broker_snapshot(adapter.adapter_name, now(), accts, pos, greeks, h['entitlements'])
-        return {'status':'ok','snapshot_id':sid,'adapter':adapter.adapter_name,'accounts':len(accts),'positions':len(pos),'live_verified':True,'orders':'disabled'}
+        return {'status':'ok' if live_ok else 'partial','snapshot_id':sid,'adapter':adapter.adapter_name,'accounts':len(accts),'positions':len(pos),'live_verified':live_ok,'incomplete_callbacks':h['incomplete_callbacks'],'orders':'disabled'}
     finally:
         adapter.disconnect()
 
@@ -276,3 +362,29 @@ def broker_state_for_risk():
     if brk.get('status')!='ok':
         return {'status':'unavailable','live_verified':False,'greeks':{}}
     return {'status':'ok','snapshot_id':brk['snapshot_id'],'as_of':brk['as_of'],'entitlements':brk['entitlements'],'accounts':brk['accounts'],'greeks':brk['greeks'],'live_verified':brk['adapter']=='ibkr_tws_readonly'}
+
+def enrich_snapshot_with_broker(csnap):
+    """Enrich a Flex PortfolioSnapshot with latest live broker option Greeks and underlying prices without mutating Flex NAV/history."""
+    b_state=broker_state_for_risk()
+    if b_state.get('status')!='ok' or not b_state.get('greeks'):
+        return csnap
+    g_map=b_state['greeks']
+    new_pos=[]
+    for p in csnap.positions:
+        g=g_map.get(p.conid)
+        if p.asset=='OPT' and g and g.get('delta') is not None:
+            new_pos.append(PositionRecord(
+                account=p.account, conid=p.conid, symbol=p.symbol, asset=p.asset, currency=p.currency,
+                quantity=p.quantity, multiplier=p.multiplier, market_value_base=p.market_value_base,
+                underlying_price=dec(g['underlying_price']) if g.get('underlying_price') is not None else p.underlying_price,
+                underlying_currency=p.underlying_currency, fx_rate_to_base=p.fx_rate_to_base,
+                delta=dec(g['delta']), source=f"{p.source}+broker:{b_state['snapshot_id']}"
+            ))
+        else:
+            new_pos.append(p)
+    return PortfolioSnapshot(
+        snapshot_id=f"{csnap.snapshot_id}_brk", as_of=csnap.as_of, status=csnap.status,
+        stale=csnap.stale, advice_allowed=csnap.advice_allowed, positions_complete=csnap.positions_complete,
+        currency=csnap.currency, nav=csnap.nav, cash=csnap.cash, accounts=csnap.accounts,
+        positions=tuple(new_pos), limitations=csnap.limitations
+    )

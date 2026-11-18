@@ -624,7 +624,7 @@ def factor_stress_test(benchmark_shock='-0.15', fx_shock='0.02', benchmark='QQQ'
 
 def evaluate_trade_gate(symbol, action, amount_base, account='taxable'):
     """Deterministic 6-point institutional Pre-Trade Gatekeeper & Red-Team audit backed by the canonical IPS evaluate_policy engine."""
-    from . import quant
+    from . import broker, finance, quant
     sym=str(symbol or '').strip().upper()
     act=str(action or '').strip().upper()
     if act not in {'BUY','ADD','TRIM','SELL'}: raise ValueError('action must be BUY, ADD, TRIM, or SELL')
@@ -632,7 +632,8 @@ def evaluate_trade_gate(symbol, action, amount_base, account='taxable'):
     if notional<=0: raise ValueError('amount_base must be positive')
     snap, blocked=_ready()
     if blocked and snap.get('status') not in {'ok','partial_or_stale'}: return blocked
-    nav=dec(snap['nav'])
+    full_csnap=broker.enrich_snapshot_with_broker(finance.load_full_portfolio_snapshot())
+    nav=full_csnap.nav if full_csnap.nav>0 else dec(snap['nav'])
     signed_delta=notional if act in {'BUY','ADD'} else -notional
     tax_all=tax_positions()
     pos_map={p['symbol']:p for p in (tax_all.get('positions') or [])}
@@ -648,7 +649,7 @@ def evaluate_trade_gate(symbol, action, amount_base, account='taxable'):
     pre_eff=(Decimal(1)/sum((v/pre_eq)**2 for v in all_vals.values() if v>0)) if pre_eq>0 else None
     post_eff=(Decimal(1)/sum((v/post_eq)**2 for v in post_vals.values() if v>0)) if post_eq>0 else None
 
-    pol_res=quant.evaluate_policy(portfolio_snapshot=snap, proposed_trade={'symbol':sym,'action':act,'amount_base':str(notional),'account':account})
+    pol_res=quant.evaluate_policy(portfolio_snapshot=full_csnap, proposed_trade={'symbol':sym,'action':act,'amount_base':str(notional),'account':account})
     targets=pol_res.get('policy_targets') or {}
     max_single=Decimal(str(targets.get('max_single_stock_weight', 0.15)))
     max_cluster=Decimal(str(targets.get('max_correlated_cluster_weight', 0.30)))
@@ -986,29 +987,47 @@ def compute_canadian_acb(symbol=None, account=None):
     return {'status':'partial_missing_cost_basis' if warnings else 'ok','base_currency':base_cur,'acb_pools':summary,'realized_dispositions':realized,'warnings':warnings,'limitations':['Chronological pooled-ACB estimate from recorded trades/splits; verify superficial-loss adjustments before tax filing.']}
 
 def discover_opportunities(universe_symbols=None, features_by_symbol=None, max_candidates=5):
-    """v0.6.0 A01: Two-stage deterministic opportunity screener (no daily whole-market LLM scan; returns no_compelling_opportunity when thresholds fail)."""
+    """v0.6.0 A01: Two-stage screener: Stage A (fundamental quality) -> Stage B (auto preliminary DCF vs market price). Distinguishes insufficient_data from no_compelling_opportunity."""
+    from . import quant
     syms=[str(s).strip().upper() for s in (universe_symbols or market.universe(include_private=False)) if str(s).strip()]
     feat_map={k.upper():v for k,v in (features_by_symbol or {}).items()}
-    scored=[]; excluded=[]
+    scored=[]; excluded=[]; data_missing_cnt=0
     for sym in syms:
         f=feat_map.get(sym) or market.generate_quality_features(sym)
         if not f:
+            data_missing_cnt+=1
             b=market.bars(sym, 60)
             if len(b)<20:
                 excluded.append({'symbol':sym,'reason':'insufficient_fundamental_and_price_features'}); continue
             px0=float(b[0]['close']); px1=float(b[-1]['close']); dd=(px1/max(px0,1e-6))-1.0
             excluded.append({'symbol':sym,'reason':'price_only_without_fundamental_quality_features','return_60d':round(dd,4)}); continue
-        roic=float(f.get('roic') or 0.0); fcf_g=float(f.get('fcf_growth') or 0.0)
-        disc=float(f.get('valuation_discount_pct') or 0.0); dil=float(f.get('dilution_rate') or 0.0)
+        roic=float(f.get('roic') or 0.0); fcf_g=float(f.get('fcf_growth') or 0.0); dil=float(f.get('dilution_rate') or 0.0)
         if roic<0.10 or fcf_g<0.0 or dil>0.05:
             excluded.append({'symbol':sym,'reason':'failed_quality_or_dilution_floor','roic':roic,'fcf_growth':fcf_g,'dilution':dil}); continue
-        if disc<0.15:
-            excluded.append({'symbol':sym,'reason':'insufficient_margin_of_safety','valuation_discount_pct':disc}); continue
-        score=round(0.40*min(1.0, roic/0.25)+0.35*min(1.0, disc/0.40)+0.25*min(1.0, fcf_g/0.20), 4)
-        scored.append({'symbol':sym,'composite_score':score,'roic':roic,'fcf_growth':fcf_g,'valuation_discount_pct':disc,'dilution_rate':dil})
+        disc=f.get('valuation_discount_pct')
+        fair_px=None; mkt_px=None
+        if disc is None:
+            rev_ttm=f.get('revenue_ttm'); op_m=f.get('operating_margin'); sh=f.get('shares'); nd=f.get('net_debt') or 0.0
+            q_info=market.quote(sym); b_info=market.bars(sym, 1)
+            mkt_px=float(q_info['price']) if q_info.get('price') else (float(b_info[-1]['close']) if b_info else None)
+            if rev_ttm and op_m and sh and float(sh)>0 and mkt_px and mkt_px>0:
+                val_res=quant.driver_based_valuation(str(rev_ttm), str(max(0.03, min(0.25, fcf_g))), str(max(0.05, float(op_m))), net_debt=str(nd), shares=str(sh))
+                fair_px=val_res['probability_weighted_per_share']
+                disc=(fair_px-mkt_px)/fair_px if fair_px>0 else 0.0
+            else:
+                data_missing_cnt+=1
+                excluded.append({'symbol':sym,'reason':'stage_a_quality_passed_missing_valuation_or_price','roic':roic,'fcf_growth':fcf_g}); continue
+        disc_f=float(disc)
+        if disc_f<0.15:
+            excluded.append({'symbol':sym,'reason':'insufficient_margin_of_safety','valuation_discount_pct':round(disc_f,4),'fair_value':fair_px,'market_price':mkt_px}); continue
+        score=round(0.40*min(1.0, roic/0.25)+0.35*min(1.0, disc_f/0.40)+0.25*min(1.0, fcf_g/0.20), 4)
+        scored.append({'symbol':sym,'composite_score':score,'roic':roic,'fcf_growth':fcf_g,'valuation_discount_pct':round(disc_f,4),'dilution_rate':dil,'preliminary_fair_value':fair_px,'reference_market_price':mkt_px})
     scored.sort(key=lambda r:r['composite_score'], reverse=True)
     top=scored[:max(1, int(max_candidates))]
-    return {'status':'ok' if top else 'no_compelling_opportunity','screened_count':len(syms),'qualified_count':len(scored),'candidates':top,'excluded':excluded,'limitations':['Stage A deterministic screen only; candidates require Stage B primary evidence and Red-Team verification before any proposal.']}
+    if top: st='ok'
+    elif data_missing_cnt==len(syms) and len(syms)>0: st='insufficient_data'
+    else: st='no_compelling_opportunity'
+    return {'status':st,'screened_count':len(syms),'qualified_count':len(scored),'candidates':top,'excluded':excluded,'limitations':['Stage A quality screen + Stage B preliminary DCF vs cached price; run full Investment Committee memo before committing capital.']}
 
 def daily_pnl_bridge(days=30):
     """v0.7.0 Q03: Reconciled Portfolio NAV change bridge into external flows, income, commissions, and market/FX residual."""
@@ -1039,9 +1058,12 @@ def daily_pnl_bridge(days=30):
             if r['category']=='cash':
                 kind=str(f.get('type') or '').lower()
                 if 'dividend' in kind or 'interest' in kind:
-                    divs+=dec(f.get('amountInBase') or f.get('amount') or 0)
+                    try: divs+=finance._flow_amount(f, base_currency=snap.currency)
+                    except finance.MissingFxRateError: return {'status':'missing_fx_rate','as_of':snap.as_of,'detail':'Dividend/interest missing FX rate'}
             elif r['category']=='trade':
-                comms+=abs(dec(f.get('ibCommission') or 0))
+                c_cur=str(f.get('ibCommissionCurrency') or f.get('currency') or snap.currency).upper()
+                c_fx=Decimal('1') if c_cur==snap.currency else dec(f.get('fxRateToBase') or '1')
+                comms+=abs(dec(f.get('ibCommission') or 0))*c_fx
     total_chg=snap.nav-start_nav
     market_fx_pnl=total_chg-ext_flows-divs+comms
     return {'status':'ok','window_from':start_d,'as_of':snap.as_of,'starting_nav_base':str(round(start_nav,2)),'ending_nav_base':str(round(snap.nav,2)),'total_nav_change_base':str(round(total_chg,2)),'external_flows_base':str(round(ext_flows,2)),'dividends_and_interest_base':str(round(divs,2)),'commissions_base':str(round(comms,2)),'market_and_fx_pnl_base':str(round(market_fx_pnl,2)),'reconciles_to_nav':True,'limitations':['Market & FX P&L equals total NAV change minus external flows and income plus commissions.']}

@@ -253,7 +253,8 @@ def resolve_forecast_prediction(pred_id, outcome_hit, note='', actual_event_at='
         row=c.execute('SELECT status, created_at FROM forecast_predictions WHERE id=?',(int(pred_id),)).fetchone()
         if not row: raise ValueError('prediction not found')
         if row['status']!='unresolved': raise ValueError('prediction already resolved and locked')
-        if ev_ts<row['created_at'][:10]: raise ValueError('cannot score outcome that occurred before prediction timestamp')
+        if len(ev_ts)<=10 and ev_ts<row['created_at'][:10]: raise ValueError('cannot score outcome that occurred before prediction date')
+        if len(ev_ts)>10 and ev_ts<=row['created_at']: raise ValueError('cannot score outcome that occurred before or at prediction timestamp')
         c.execute("UPDATE forecast_predictions SET status='resolved', outcome_hit=?, note=?, resolved_at=? WHERE id=?",(hit,str(note),ev_ts,int(pred_id)))
     return {'id':int(pred_id),'status':'resolved','outcome_hit':hit}
 

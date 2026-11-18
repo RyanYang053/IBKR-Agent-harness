@@ -32,7 +32,9 @@ def schema(c):
         operator_note TEXT NOT NULL DEFAULT '',
         memory_id INTEGER,
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        lease_owner TEXT,
+        lease_expires_at TEXT
     );
     CREATE TABLE IF NOT EXISTS telemetry_spans(
         span_id TEXT PRIMARY KEY,
@@ -77,6 +79,10 @@ def schema(c):
     for col_def in ("immutable_params_json TEXT NOT NULL DEFAULT '{}'", "input_hash TEXT NOT NULL DEFAULT ''", "workflow_version TEXT NOT NULL DEFAULT '1'"):
         cname=col_def.split()[0]
         if cname not in wf_cols: c.execute(f'ALTER TABLE workflow_runs ADD COLUMN {col_def}')
+    ai_cols={r[1] for r in c.execute('PRAGMA table_info(approval_intents)')}
+    for col_def in ('lease_owner TEXT', 'lease_expires_at TEXT'):
+        cname=col_def.split()[0]
+        if cname not in ai_cols: c.execute(f'ALTER TABLE approval_intents ADD COLUMN {col_def}')
 
 def record_span(surface, tool_name, status, latency_ms, approx_tokens, error_type=None):
     """Privacy-preserving observability: records latency, status, and token footprint without logging private payloads."""
@@ -523,12 +529,18 @@ def approve_workflow(run_id, operator_note=''):
                 rec_mid=intent['memory_id']; rec_note=intent['operator_note']; need_repair=True
                 c.execute("UPDATE approval_intents SET decision='approved', updated_at=? WHERE run_id=?",(now(), str(run_id)))
             elif intent['decision']=='approving' and intent['memory_id'] is None:
-                # Check if knowledge.sqlite3 already committed for this run_id before crash
                 k_existing=knowledge.find_by_approval_run_id(str(run_id))
                 if k_existing:
                     rec_mid=k_existing['id']; rec_note=intent['operator_note']; need_repair=True
                     c.execute("UPDATE approval_intents SET memory_id=?, decision='approved', updated_at=? WHERE run_id=?",(rec_mid, now(), str(run_id)))
                 else:
+                    lease_id=f'lease_{uuid.uuid4().hex[:8]}'
+                    t_now=datetime.now(timezone.utc)
+                    exp_ts=(t_now.timestamp()+120.0)
+                    exp_iso=datetime.fromtimestamp(exp_ts, tz=timezone.utc).isoformat()
+                    cur_l=c.execute("UPDATE approval_intents SET lease_owner=?, lease_expires_at=?, updated_at=? WHERE run_id=? AND decision='approving' AND memory_id IS NULL AND (lease_owner IS NULL OR lease_expires_at<?)",(lease_id, exp_iso, t_now.isoformat(), str(run_id), t_now.isoformat()))
+                    if cur_l.rowcount==0:
+                        raise ValueError('approval recovery already in progress by active lease owner')
                     recovering_null_intent=True
     if need_repair and rec_mid is not None:
         done=list(state['completed_steps'])
@@ -774,14 +786,15 @@ def shadow_mode_check():
         schema(c)
         pending=c.execute("SELECT count(*) FROM workflow_runs WHERE status='awaiting_approval'").fetchone()[0]
         stuck=c.execute("SELECT count(*) FROM workflow_runs WHERE status='approving'").fetchone()[0]
+    brk_snap=broker.latest_broker_snapshot()
     eval_ok=bool(ev_runs and ev_runs[0]['score_pct']==100.0)
     flex_ok=bool(snap.advice_allowed)
-    broker_ok=(rec.get('status')=='reconciled')
+    broker_ok=(rec.get('status')=='reconciled') and (brk_snap.get('adapter')=='ibkr_tws_readonly')
     pol_ok=(pol.get('status') not in {'blocked','blocked_policy_violation','invalid_nav'}) and bool(pol.get('risk_coverage_complete'))
     ready=flex_ok and broker_ok and pol_ok and stuck==0 and eval_ok
     blockers=[]
     if not flex_ok: blockers.append(f'flex:{snap.status}')
-    if not broker_ok: blockers.append(f"broker:{rec.get('status')}")
+    if not broker_ok: blockers.append(f"broker:{rec.get('status')}:{brk_snap.get('adapter','none')}")
     if not pol_ok: blockers.append(f"policy:{pol.get('status')}")
     if stuck>0: blockers.append(f'stuck_approving:{stuck}')
     if not eval_ok: blockers.append('eval_not_100pct')

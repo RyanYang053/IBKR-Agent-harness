@@ -376,13 +376,20 @@ EDGAR_CONCEPTS=(
     'WeightedAverageNumberOfDilutedSharesOutstanding','CommonStockSharesOutstanding'
 )
 
-def sync_filings(symbol):
-    try: cik=_cik(symbol)
-    except RuntimeError as exc: return {'symbol':symbol,'provider':'sec_edgar','status':'unavailable','reason':str(exc)}
-    if not cik: return {'symbol':symbol,'provider':'sec_edgar','status':'unavailable','reason':'CIK not found'}
-    contact=market_config().get('edgar_contact')
-    try: facts=_request('https://data.sec.gov/api/xbrl/companyfacts/CIK'+cik+'.json', {'User-Agent':contact}, 'edgar', 0.2)
-    except RuntimeError as exc: return {'symbol':symbol,'status':'unavailable','error':str(exc)}
+def _upsert_pit_vintage(c, sym, per, stmt_type, std_concept, val, unit_name, f_dt, ev_id):
+    rows=c.execute('SELECT revision_seq, value, filed_at FROM financial_statements_pit WHERE symbol=? AND period=? AND concept=? ORDER BY revision_seq DESC',(sym,per,std_concept)).fetchall()
+    if any(r['filed_at']==f_dt and abs(float(r['value'])-float(val))<1e-6 for r in rows):
+        return 0
+    if rows and abs(float(rows[0]['value'])-float(val))<1e-6 and f_dt>=rows[0]['filed_at']:
+        return 0
+    next_seq=(rows[0]['revision_seq']+1) if rows else 1
+    c.execute('INSERT INTO financial_statements_pit(symbol,period,statement_type,concept,value,currency,unit,accounting_standard,filed_at,available_at,revision_seq,evidence_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+        (sym, per, stmt_type, std_concept, float(val), 'USD', unit_name or 'USD', 'US-GAAP', f_dt, f_dt, next_seq, ev_id))
+    return 1
+
+def _normalize_sec_xbrl_facts(symbol, cik, facts):
+    """Normalize SEC CompanyFacts JSON into filings + Point-in-Time financial_statements_pit (differencing YTD to standalone quarters and preserving all vintages)."""
+    sym=str(symbol or '').strip().upper()
     units=(facts.get('facts') or {}).get('us-gaap') or {}
     saved=0; pit_saved=0; stamp=datetime.now(timezone.utc).isoformat()
     concept_std_map={
@@ -392,42 +399,104 @@ def sync_filings(symbol):
         'CashAndCashEquivalentsAtCarryingValue':('BS','Cash'),'LongTermDebt':('BS','TotalDebt'),'LongTermDebtNoncurrent':('BS','TotalDebt'),
         'ShortTermBorrowings':('BS','ShortTermDebt'),'WeightedAverageNumberOfDilutedSharesOutstanding':('IS','DilutedShares'),'CommonStockSharesOutstanding':('BS','SharesOutstanding')
     }
-    ev=record_evidence(symbol.upper(), 'xbrl_companyfacts', 'sec_edgar', f'{symbol.upper()} SEC XBRL CompanyFacts', f'CIK {cik}', url=f'https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json', cik=cik, filed_at=stamp[:10], available_at=stamp[:10])
+    ev=record_evidence(sym, 'xbrl_companyfacts', 'sec_edgar', f'{sym} SEC XBRL CompanyFacts', f'CIK {cik}', url=f'https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json', cik=str(cik), filed_at=stamp[:10], available_at=stamp[:10])
     with db('market') as c:
         schema(c)
         for concept in EDGAR_CONCEPTS:
             unit_map=(units.get(concept) or {}).get('units') or {}
             unit_name='USD' if 'USD' in unit_map else ('USD/shares' if 'USD/shares' in unit_map else ('shares' if 'shares' in unit_map else ''))
             entries=unit_map.get(unit_name) or []
+            stmt_type, std_concept = concept_std_map.get(concept, ('OTHER', concept))
+
+            # Legacy annual filings table (latest 3 fiscal years)
             annual=[row for row in entries if row.get('form') in {'10-K','20-F'} and row.get('fp')=='FY' and row.get('end') and row.get('val') is not None]
-            by_period={}
+            by_end={}
             for row in annual:
                 end=row['end']
-                if end not in by_period or (row.get('filed') or '')>(by_period[end].get('filed') or ''):
-                    by_period[end]=row
-            for end in sorted(by_period.keys(), reverse=True)[:3]:
-                item=by_period[end]
-                c.execute('INSERT OR REPLACE INTO filings VALUES(?,?,?,?,?,?,?)',(symbol.upper(),concept,end,str(item.get('val')),item.get('form'),'sec_edgar',stamp))
+                if end not in by_end or (row.get('filed') or '')>(by_end[end].get('filed') or ''):
+                    by_end[end]=row
+            for end in sorted(by_end.keys(), reverse=True)[:3]:
+                item=by_end[end]
+                c.execute('INSERT OR REPLACE INTO filings VALUES(?,?,?,?,?,?,?)',(sym,concept,end,str(item.get('val')),item.get('form'),'sec_edgar',stamp))
                 saved+=1
-            # Populate PIT financial_statements_pit (up to 10y annual + 20q quarterly)
-            stmt_type, std_concept = concept_std_map.get(concept, ('OTHER', concept))
-            for end in sorted(by_period.keys(), reverse=True)[:10]:
-                item=by_period[end]; f_dt=str(item.get('filed') or end)
-                c.execute('INSERT OR IGNORE INTO financial_statements_pit(symbol,period,statement_type,concept,value,currency,unit,accounting_standard,filed_at,available_at,revision_seq,evidence_id) VALUES(?,?,?,?,?,?,?,?,?,?,1,?)',
-                    (symbol.upper(), f'FY{end[:4]}', stmt_type, std_concept, float(item['val']), 'USD', unit_name or 'USD', 'US-GAAP', f_dt, f_dt, ev['evidence_id']))
-                pit_saved+=1
-            quarterly=[row for row in entries if row.get('form') in {'10-Q','10-K'} and row.get('fp') in {'Q1','Q2','Q3','Q4'} and row.get('end') and row.get('val') is not None]
-            q_by={}
-            for row in quarterly:
-                q_key=f"{row['end'][:4]}{row['fp']}"
-                if q_key not in q_by or (row.get('filed') or '')>(q_by[q_key].get('filed') or ''):
-                    q_by[q_key]=row
-            for q_key in sorted(q_by.keys(), reverse=True)[:20]:
-                item=q_by[q_key]; f_dt=str(item.get('filed') or item['end'])
-                c.execute('INSERT OR IGNORE INTO financial_statements_pit(symbol,period,statement_type,concept,value,currency,unit,accounting_standard,filed_at,available_at,revision_seq,evidence_id) VALUES(?,?,?,?,?,?,?,?,?,?,1,?)',
-                    (symbol.upper(), q_key, stmt_type, std_concept, float(item['val']), 'USD', unit_name or 'USD', 'US-GAAP', f_dt, f_dt, ev['evidence_id']))
-                pit_saved+=1
-    return {'symbol':symbol.upper(),'provider':'sec_edgar','status':'ok','facts':saved,'pit_facts':pit_saved,'evidence_id':ev['evidence_id']}
+
+            # Group all vintages by fiscal year (fy) and duration (standalone quarter vs YTD vs FY)
+            by_fy={}
+            for row in entries:
+                if row.get('val') is None or not row.get('end'): continue
+                fy=str(row.get('fy') or row['end'][:4])
+                fp=str(row.get('fp') or '')
+                f_dt=str(row.get('filed') or row['end'])
+                val=float(row['val'])
+                if stmt_type=='BS' or not row.get('start'):
+                    per=f'FY{fy}' if fp=='FY' else (f'{fy}{fp}' if fp in {'Q1','Q2','Q3','Q4'} else f'FY{fy}')
+                    by_fy.setdefault(('direct', per), []).append((f_dt, val))
+                    continue
+                try:
+                    dur=(datetime.strptime(row['end'][:10],'%Y-%m-%d').date()-datetime.strptime(row['start'][:10],'%Y-%m-%d').date()).days
+                except Exception:
+                    continue
+                if dur<=115 and fp in {'Q1','Q2','Q3','Q4'}:
+                    by_fy.setdefault(('q', fy, fp), []).append((f_dt, val))
+                elif 150<=dur<=210:
+                    by_fy.setdefault(('h1', fy), []).append((f_dt, val))
+                elif 240<=dur<=300:
+                    by_fy.setdefault(('ytd9', fy), []).append((f_dt, val))
+                elif 330<=dur<=385:
+                    by_fy.setdefault(('fy', fy), []).append((f_dt, val))
+
+            # Store direct BS and FY rows with all historical vintages
+            fys=sorted({k[1] for k in by_fy if k[0] in {'q','h1','ytd9','fy'}}, reverse=True)[:10]
+            for key, vlist in sorted(by_fy.items()):
+                if key[0]=='direct':
+                    for f_dt, val in sorted(vlist, key=lambda x:x[0]):
+                        pit_saved+=_upsert_pit_vintage(c, sym, key[1], stmt_type, std_concept, val, unit_name, f_dt, ev['evidence_id'])
+            for fy in fys:
+                for f_dt, val in sorted(by_fy.get(('fy', fy), []), key=lambda x:x[0]):
+                    pit_saved+=_upsert_pit_vintage(c, sym, f'FY{fy}', stmt_type, std_concept, val, unit_name, f_dt, ev['evidence_id'])
+                # Standalone Q1-Q4 or YTD-differenced Q2, Q3, Q4
+                q_vals={}
+                for qp in ('Q1','Q2','Q3','Q4'):
+                    q_list=sorted(by_fy.get(('q', fy, qp), []), key=lambda x:x[0])
+                    for f_dt, val in q_list:
+                        pit_saved+=_upsert_pit_vintage(c, sym, f'{fy}{qp}', stmt_type, std_concept, val, unit_name, f_dt, ev['evidence_id'])
+                        q_vals[qp]=(f_dt, val)
+                h1_list=sorted(by_fy.get(('h1', fy), []), key=lambda x:x[0])
+                if 'Q2' not in q_vals and 'Q1' in q_vals and h1_list:
+                    f_dt, h1_v = h1_list[-1]
+                    q2_v=h1_v-q_vals['Q1'][1]
+                    pit_saved+=_upsert_pit_vintage(c, sym, f'{fy}Q2', stmt_type, std_concept, q2_v, unit_name, max(f_dt, q_vals['Q1'][0]), ev['evidence_id'])
+                    q_vals['Q2']=(max(f_dt, q_vals['Q1'][0]), q2_v)
+                ytd9_list=sorted(by_fy.get(('ytd9', fy), []), key=lambda x:x[0])
+                if 'Q3' not in q_vals and ytd9_list:
+                    f_dt, y9_v = ytd9_list[-1]
+                    if h1_list:
+                        q3_v=y9_v-h1_list[-1][1]
+                        pit_saved+=_upsert_pit_vintage(c, sym, f'{fy}Q3', stmt_type, std_concept, q3_v, unit_name, max(f_dt, h1_list[-1][0]), ev['evidence_id'])
+                        q_vals['Q3']=(max(f_dt, h1_list[-1][0]), q3_v)
+                    elif 'Q1' in q_vals and 'Q2' in q_vals:
+                        q3_v=y9_v-q_vals['Q1'][1]-q_vals['Q2'][1]
+                        pit_saved+=_upsert_pit_vintage(c, sym, f'{fy}Q3', stmt_type, std_concept, q3_v, unit_name, f_dt, ev['evidence_id'])
+                        q_vals['Q3']=(f_dt, q3_v)
+                fy_list=sorted(by_fy.get(('fy', fy), []), key=lambda x:x[0])
+                if 'Q4' not in q_vals and fy_list:
+                    f_dt, fy_v = fy_list[-1]
+                    if ytd9_list:
+                        q4_v=fy_v-ytd9_list[-1][1]
+                        pit_saved+=_upsert_pit_vintage(c, sym, f'{fy}Q4', stmt_type, std_concept, q4_v, unit_name, max(f_dt, ytd9_list[-1][0]), ev['evidence_id'])
+                    elif all(k in q_vals for k in ('Q1','Q2','Q3')):
+                        q4_v=fy_v-(q_vals['Q1'][1]+q_vals['Q2'][1]+q_vals['Q3'][1])
+                        pit_saved+=_upsert_pit_vintage(c, sym, f'{fy}Q4', stmt_type, std_concept, q4_v, unit_name, f_dt, ev['evidence_id'])
+    return {'symbol':sym,'provider':'sec_edgar','status':'ok','facts':saved,'pit_facts':pit_saved,'evidence_id':ev['evidence_id']}
+
+def sync_filings(symbol):
+    try: cik=_cik(symbol)
+    except RuntimeError as exc: return {'symbol':symbol,'provider':'sec_edgar','status':'unavailable','reason':str(exc)}
+    if not cik: return {'symbol':symbol,'provider':'sec_edgar','status':'unavailable','reason':'CIK not found'}
+    contact=market_config().get('edgar_contact')
+    try: facts=_request('https://data.sec.gov/api/xbrl/companyfacts/CIK'+cik+'.json', {'User-Agent':contact}, 'edgar', 0.2)
+    except RuntimeError as exc: return {'symbol':symbol,'status':'unavailable','error':str(exc)}
+    return _normalize_sec_xbrl_facts(symbol, cik, facts)
 
 def filings(symbol):
     with db('market') as c:
@@ -867,7 +936,13 @@ def compute_ttm_and_ratios(symbol, as_of=''):
         return sum(vals) if all(v is not None for v in vals) else None
     rev=_sum_q('Revenue'); ebit=_sum_q('OperatingIncome'); ocf=_sum_q('OperatingCashFlow'); capex=_sum_q('CapEx')
     latest_q=q_by_per[q_periods[0]]
-    cash=latest_q.get('Cash'); debt=latest_q.get('TotalDebt'); eq=latest_q.get('ShareholdersEquity')
+    by_fy={}
+    for f in facts:
+        if f['period'].startswith('FY'): by_fy.setdefault(f['period'], {})[f['concept']]=f['value']
+    latest_fy=by_fy[sorted(by_fy.keys(), reverse=True)[0]] if by_fy else {}
+    cash=latest_q.get('Cash') if latest_q.get('Cash') is not None else latest_fy.get('Cash')
+    debt=latest_q.get('TotalDebt') if latest_q.get('TotalDebt') is not None else latest_fy.get('TotalDebt')
+    eq=latest_q.get('ShareholdersEquity') if latest_q.get('ShareholdersEquity') is not None else latest_fy.get('ShareholdersEquity')
     fcf=(ocf-abs(capex)) if (ocf is not None and capex is not None) else None
     op_margin=(ebit/rev) if (ebit is not None and rev) else None
     roic=(ebit*(1.0-0.21)/(debt+eq-cash)) if (ebit is not None and debt is not None and eq is not None and cash is not None and (debt+eq-cash)>0) else None
@@ -903,4 +978,9 @@ def generate_quality_features(symbol, as_of=''):
             ic=(c0.get('TotalDebt',0)+c0.get('ShareholdersEquity',0)-c0.get('Cash',0))
             if ic>0: roic=(c0['OperatingIncome']*0.79)/ic
     if roic is None: return None
-    return {'roic':round(float(roic),4),'fcf_growth':round(float(fcf_g),4),'dilution_rate':round(float(dil),4),'valuation_discount_pct':0.0,'source':'pit_financial_statements'}
+    rev_ttm=(ttm.get('ttm_metrics') or {}).get('revenue')
+    op_m=(ttm.get('ratios') or {}).get('operating_margin')
+    latest_fy=by_fy[fys[0]] if fys else {}
+    net_debt=(latest_fy.get('TotalDebt',0)-latest_fy.get('Cash',0)) if ('TotalDebt' in latest_fy or 'Cash' in latest_fy) else 0.0
+    shares=latest_fy.get('DilutedShares') or latest_fy.get('SharesOutstanding')
+    return {'roic':round(float(roic),4),'fcf_growth':round(float(fcf_g),4),'dilution_rate':round(float(dil),4),'valuation_discount_pct':None,'revenue_ttm':rev_ttm,'operating_margin':op_m,'net_debt':net_debt,'shares':shares,'source':'pit_financial_statements'}

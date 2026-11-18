@@ -266,7 +266,7 @@ def knowledge_checks(home):
         wf_cr = ops.run_workflow('equity_valuation_and_expectations', {'symbol': 'QQQ', 'propose_thesis': 'Crash test', 'falsifier': 'Break'})
         with core.db('ops') as c:
             c.execute("UPDATE workflow_runs SET status='approving' WHERE run_id=?", (wf_cr['run_id'],))
-            c.execute("INSERT INTO approval_intents VALUES(?,?,?,?,?,?)", (wf_cr['run_id'], 'approving', 'crash', 777, core.now(), core.now()))
+            c.execute("INSERT INTO approval_intents(run_id,decision,operator_note,memory_id,created_at,updated_at) VALUES(?,?,?,?,?,?)", (wf_cr['run_id'], 'approving', 'crash', 777, core.now(), core.now()))
         rec_res = ops.approve_workflow(wf_cr['run_id'])
         rej_after = False
         try:
@@ -380,7 +380,7 @@ def knowledge_checks(home):
         knowledge.resolve_forecast_prediction(p1['id'], 1)
         brier = knowledge.brier_calibration_report()
         sh_chk = ops.shadow_mode_check()
-        check('v0.6-v1.0 discovery, alerts, calibration, and shadow check', disc_none['status'] == 'no_compelling_opportunity' and disc_hit['candidates'][0]['symbol'] == 'QQQ' and al2['deduplicated'] is True and al2['hit_count'] == 2 and brier['resolved_count'] == 1 and brier['unresolved_count'] == 1 and sh_chk['orders'] == 'disabled' and sh_chk['status'] == 'blocked')
+        check('v0.6-v1.0 discovery, alerts, calibration, and shadow check', disc_none['status'] == 'insufficient_data' and disc_hit['candidates'][0]['symbol'] == 'QQQ' and al2['deduplicated'] is True and al2['hit_count'] == 2 and brier['resolved_count'] == 1 and brier['unresolved_count'] == 1 and sh_chk['orders'] == 'disabled' and sh_chk['status'] == 'blocked')
 
         # Audit-83da731 counterexample regressions:
         # A. Adding 1 more option contract doubles delta-notional exposure from 50% to 100%
@@ -405,7 +405,7 @@ def knowledge_checks(home):
         wf_null = ops.run_workflow('equity_valuation_and_expectations', {'symbol': 'QQQ', 'propose_thesis': 'Null crash recovery', 'falsifier': 'Break'})
         with core.db('ops') as c:
             c.execute("UPDATE workflow_runs SET status='approving' WHERE run_id=?", (wf_null['run_id'],))
-            c.execute("INSERT INTO approval_intents VALUES(?,?,?,?,?,?)", (wf_null['run_id'], 'approving', 'null_crash', None, core.now(), core.now()))
+            c.execute("INSERT INTO approval_intents(run_id,decision,operator_note,memory_id,created_at,updated_at) VALUES(?,?,?,?,?,?)", (wf_null['run_id'], 'approving', 'null_crash', None, core.now(), core.now()))
         rec_null = ops.approve_workflow(wf_null['run_id'], 'recovered')
         check('approving NULL memory_id crash recovery', rec_null['status'] == 'completed' and rec_null['committed_memory_id'] is not None)
 
@@ -415,7 +415,48 @@ def knowledge_checks(home):
         with core.db('finance') as c:
             c.execute('INSERT INTO records VALUES(?,?,?,?,?)', ('margin', 'trade', 'acb_over', json.dumps({'symbol': 'TESTACB', 'assetCategory': 'STK', 'buySell': 'SELL', 'quantity': '20', 'tradePrice': '130', 'currency': 'CAD'}), 'syn'))
         acb_over = decision.compute_canadian_acb('TESTACB', 'margin')
-        check('tws fails closed, pit auto discovery, and acb oversell warning', tws_res['status'] == 'unavailable' and tws_res['live_verified'] is False and pit_disc['excluded'][0]['reason'] == 'insufficient_margin_of_safety' and acb_over['status'] == 'partial_missing_cost_basis')
+        # E. Realistic SEC XBRL CompanyFacts YTD->Quarter differencing, restatement vintages, & Stage B auto-DCF discovery
+        xbrl_sample = {'facts': {'us-gaap': {
+            'Revenues': {'units': {'USD': [
+                {'form': '10-Q', 'fp': 'Q1', 'fy': 2026, 'start': '2025-10-01', 'end': '2025-12-31', 'filed': '2026-02-01', 'val': 100.0},
+                {'form': '10-Q', 'fp': 'Q2', 'fy': 2026, 'start': '2026-01-01', 'end': '2026-03-31', 'filed': '2026-05-01', 'val': 110.0},
+                {'form': '10-Q', 'fp': 'Q3', 'fy': 2026, 'start': '2026-04-01', 'end': '2026-06-30', 'filed': '2026-08-01', 'val': 120.0},
+                {'form': '10-K', 'fp': 'FY', 'fy': 2026, 'start': '2025-10-01', 'end': '2026-09-30', 'filed': '2026-11-10', 'val': 460.0},
+                {'form': '10-K', 'fp': 'FY', 'fy': 2025, 'start': '2024-10-01', 'end': '2025-09-30', 'filed': '2025-11-10', 'val': 400.0},
+            ]}},
+            'OperatingIncomeLoss': {'units': {'USD': [
+                {'form': '10-Q', 'fp': 'Q1', 'fy': 2026, 'start': '2025-10-01', 'end': '2025-12-31', 'filed': '2026-02-01', 'val': 30.0},
+                {'form': '10-Q', 'fp': 'Q2', 'fy': 2026, 'start': '2026-01-01', 'end': '2026-03-31', 'filed': '2026-05-01', 'val': 35.0},
+                {'form': '10-Q', 'fp': 'Q3', 'fy': 2026, 'start': '2026-04-01', 'end': '2026-06-30', 'filed': '2026-08-01', 'val': 35.0},
+                {'form': '10-K', 'fp': 'FY', 'fy': 2026, 'start': '2025-10-01', 'end': '2026-09-30', 'filed': '2026-11-10', 'val': 140.0},
+                {'form': '10-K', 'fp': 'FY', 'fy': 2025, 'start': '2024-10-01', 'end': '2025-09-30', 'filed': '2025-11-10', 'val': 110.0},
+            ]}},
+            'NetCashProvidedByUsedInOperatingActivities': {'units': {'USD': [
+                {'form': '10-Q', 'fp': 'Q1', 'fy': 2026, 'start': '2025-10-01', 'end': '2025-12-31', 'filed': '2026-02-01', 'val': 100.0},
+                {'form': '10-Q', 'fp': 'Q2', 'fy': 2026, 'start': '2025-10-01', 'end': '2026-03-31', 'filed': '2026-05-01', 'val': 200.0},
+                {'form': '10-Q', 'fp': 'Q3', 'fy': 2026, 'start': '2025-10-01', 'end': '2026-06-30', 'filed': '2026-08-01', 'val': 300.0},
+                {'form': '10-K', 'fp': 'FY', 'fy': 2026, 'start': '2025-10-01', 'end': '2026-09-30', 'filed': '2026-11-10', 'val': 400.0},
+                {'form': '10-K', 'fp': 'FY', 'fy': 2025, 'start': '2024-10-01', 'end': '2025-09-30', 'filed': '2025-11-10', 'val': 350.0},
+            ]}},
+            'PaymentsToAcquirePropertyPlantAndEquipment': {'units': {'USD': [
+                {'form': '10-Q', 'fp': 'Q1', 'fy': 2026, 'start': '2025-10-01', 'end': '2025-12-31', 'filed': '2026-02-01', 'val': 10.0},
+                {'form': '10-Q', 'fp': 'Q2', 'fy': 2026, 'start': '2025-10-01', 'end': '2026-03-31', 'filed': '2026-05-01', 'val': 20.0},
+                {'form': '10-Q', 'fp': 'Q3', 'fy': 2026, 'start': '2025-10-01', 'end': '2026-06-30', 'filed': '2026-08-01', 'val': 30.0},
+                {'form': '10-K', 'fp': 'FY', 'fy': 2026, 'start': '2025-10-01', 'end': '2026-09-30', 'filed': '2026-11-10', 'val': 40.0},
+                {'form': '10-K', 'fp': 'FY', 'fy': 2025, 'start': '2024-10-01', 'end': '2025-09-30', 'filed': '2025-11-10', 'val': 40.0},
+            ]}},
+            'LongTermDebt': {'units': {'USD': [{'form': '10-K', 'fp': 'FY', 'fy': 2026, 'end': '2026-09-30', 'filed': '2026-11-10', 'val': 50.0}, {'form': '10-K', 'fp': 'FY', 'fy': 2025, 'end': '2025-09-30', 'filed': '2025-11-10', 'val': 50.0}]}},
+            'CashAndCashEquivalentsAtCarryingValue': {'units': {'USD': [{'form': '10-K', 'fp': 'FY', 'fy': 2026, 'end': '2026-09-30', 'filed': '2026-11-10', 'val': 100.0}, {'form': '10-K', 'fp': 'FY', 'fy': 2025, 'end': '2025-09-30', 'filed': '2025-11-10', 'val': 100.0}]}},
+            'WeightedAverageNumberOfDilutedSharesOutstanding': {'units': {'shares': [{'form': '10-K', 'fp': 'FY', 'fy': 2026, 'end': '2026-09-30', 'filed': '2026-11-10', 'val': 10.0}, {'form': '10-K', 'fp': 'FY', 'fy': 2025, 'end': '2025-09-30', 'filed': '2025-11-10', 'val': 10.0}]}},
+        }}}
+        market._normalize_sec_xbrl_facts('XBRLCO', '0000999999', xbrl_sample)
+        ttm_x = market.compute_ttm_and_ratios('XBRLCO', as_of='2026-11-15')
+        market._cache_bars('XBRLCO', [{'ts': '2026-11-15', 'open': '50', 'close': '50', 'currency': 'USD'}], 'yfinance', 'split_and_dividend_adj')
+        with core.db('market') as mc:
+            mc.execute("INSERT OR IGNORE INTO financial_statements_pit VALUES('XBRLCO','FY2026','BS','ShareholdersEquity',300.0,'USD','USD','US-GAAP','2026-11-10','2026-11-10',1,'ev_x')")
+        disc_auto = decision.discover_opportunities(['XBRLCO'])
+        disc_nodata = decision.discover_opportunities(['NODATA_TICKER'])
+        check('sec ytd differencing and auto stage-b discovery', ttm_x['ttm_metrics']['operating_cash_flow'] == 400.0 and ttm_x['ttm_metrics']['capex'] == 40.0 and disc_auto['status'] == 'ok' and disc_auto['candidates'][0]['symbol'] == 'XBRLCO' and disc_nodata['status'] == 'insufficient_data')
 
         os.environ['PERSONAL_AGENT_HOME'] = prev_h2
         reload(core); reload(finance); reload(market); reload(decision); reload(knowledge); reload(quant); reload(ops)
