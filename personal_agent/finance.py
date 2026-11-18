@@ -225,6 +225,12 @@ def load_full_portfolio_snapshot():
         limitations=('Reconciled Flex daily statement; not live broker state.',)
     )
 
+def decision_snapshot(max_broker_age_seconds=300):
+    """Single validated decision snapshot combining full reconciled Flex state with fresh live broker enrichment (when available)."""
+    from . import broker
+    base=load_full_portfolio_snapshot()
+    return broker.enrich_snapshot_with_broker(base, max_age_seconds=max_broker_age_seconds)
+
 def portfolio(limit=None, offset=0):
     cfg=config()['finance']; aliases=set(cfg['accounts'].values())
     if not aliases: return {'status':'not_configured'}

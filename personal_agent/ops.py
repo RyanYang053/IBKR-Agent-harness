@@ -34,7 +34,8 @@ def schema(c):
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         lease_owner TEXT,
-        lease_expires_at TEXT
+        lease_expires_at TEXT,
+        payload_hash TEXT NOT NULL DEFAULT ''
     );
     CREATE TABLE IF NOT EXISTS telemetry_spans(
         span_id TEXT PRIMARY KEY,
@@ -80,7 +81,7 @@ def schema(c):
         cname=col_def.split()[0]
         if cname not in wf_cols: c.execute(f'ALTER TABLE workflow_runs ADD COLUMN {col_def}')
     ai_cols={r[1] for r in c.execute('PRAGMA table_info(approval_intents)')}
-    for col_def in ('lease_owner TEXT', 'lease_expires_at TEXT'):
+    for col_def in ('lease_owner TEXT', 'lease_expires_at TEXT', "payload_hash TEXT NOT NULL DEFAULT ''"):
         cname=col_def.split()[0]
         if cname not in ai_cols: c.execute(f'ALTER TABLE approval_intents ADD COLUMN {col_def}')
 
@@ -219,7 +220,7 @@ def _param_hash(obj):
     return hashlib.sha256(json.dumps(obj or {}, sort_keys=True, default=str).encode('utf-8')).hexdigest()[:16]
 
 def _positions_hash():
-    return finance.load_full_portfolio_snapshot().snapshot_id
+    return finance.decision_snapshot().snapshot_id
 
 def run_workflow(workflow_id, params=None, resume_run_id=None):
     """Execute a structured multi-stage investment workflow with immutable input binding, step-by-step durable SQLite checkpoints, and safe crash-resume."""
@@ -472,12 +473,18 @@ def run_workflow(workflow_id, params=None, resume_run_id=None):
         s1_r=ckpt.get('1_research_case') or {}
         s3_v=ckpt.get('3_valuation_scenarios')
         s6_a=ckpt.get('6_and_7_alternatives_and_allocation') or {}
+        has_research=(
+            (s1_r.get('living_thesis') or {}).get('status')=='active'
+            or bool((s1_r.get('filing_forensics') or {}).get('forensic_metrics'))
+            or bool(market.get_evidence(sym))
+            or bool((s1_r.get('stock_brief') or {}).get('edgar_fundamentals'))
+        )
         acc_ok=(
             (g_verd in {'clear','caution_review_flags'})
             and (s3_v is not None)
             and (s6_a.get('status')=='ok')
             and bool(str(p.get('falsifier') or '').strip())
-            and (s1_r.get('stock_brief',{}).get('status') not in {'blocked','unavailable'})
+            and has_research
         )
         _save_run(run_id, workflow_id, 'awaiting_approval', '8_awaiting_human_committee_approval', done, True, {'symbol':sym,'action':act,'amount_base':amt,'staged_nav':s4_gate.get('portfolio_nav'),'staged_policy_hash':s4_gate.get('policy_hash')}, ckpt, proposed, acc_ok)
         record_span('workflow', workflow_id, 'ok', (time.perf_counter()-t0)*1000.0, len(json.dumps(ckpt))//4)
@@ -543,6 +550,9 @@ def approve_workflow(run_id, operator_note=''):
                     rec_mid=k_existing['id']; rec_note=intent['operator_note']; need_repair=True
                     c.execute("UPDATE approval_intents SET memory_id=?, decision='approved', updated_at=? WHERE run_id=?",(rec_mid, now(), str(run_id)))
                 else:
+                    p_hash_chk=_param_hash({'prop':state['proposed_action'],'note':operator_note})
+                    if intent['payload_hash'] and intent['payload_hash']!=p_hash_chk:
+                        raise ValueError('immutable_approval_payload_mismatch')
                     lease_id=f'lease_{uuid.uuid4().hex[:8]}'
                     t_now=datetime.now(timezone.utc)
                     exp_iso=datetime.fromtimestamp(t_now.timestamp()+120.0, tz=timezone.utc).isoformat()
@@ -597,9 +607,15 @@ def approve_workflow(run_id, operator_note=''):
             except ValueError as ve:
                 if 'shifted >5%' in str(ve): raise
 
-    # Atomic CAS intent claim with initial ownership lease
+    # Atomic CAS intent claim with initial ownership lease and immutable payload_hash
     t_now=datetime.now(timezone.utc); stamp=t_now.isoformat()
-    if not recovering_null_intent:
+    p_hash=_param_hash({'prop':prop,'note':operator_note})
+    if recovering_null_intent:
+        with db('ops') as c:
+            row_h=c.execute('SELECT payload_hash FROM approval_intents WHERE run_id=?',(str(run_id),)).fetchone()
+            if row_h and row_h['payload_hash'] and row_h['payload_hash']!=p_hash:
+                raise ValueError('immutable_approval_payload_mismatch')
+    else:
         lease_id=f'lease_{uuid.uuid4().hex[:8]}'
         exp_iso=datetime.fromtimestamp(t_now.timestamp()+120.0, tz=timezone.utc).isoformat()
         with db('ops') as c:
@@ -610,7 +626,13 @@ def approve_workflow(run_id, operator_note=''):
                 if intent and intent['decision']=='approved':
                     return {'run_id':run_id,'status':'completed','idempotent':True,'committed_memory_id':intent['memory_id'],'orders':'disabled'}
                 raise ValueError('workflow run already claimed or no longer awaiting approval')
-            c.execute("INSERT OR IGNORE INTO approval_intents(run_id,decision,operator_note,memory_id,created_at,updated_at,lease_owner,lease_expires_at) VALUES(?,?,?,?,?,?,?,?)",(str(run_id),'approving',operator_note,None,stamp,stamp,lease_id,exp_iso))
+            c.execute("INSERT OR IGNORE INTO approval_intents(run_id,decision,operator_note,memory_id,created_at,updated_at,lease_owner,lease_expires_at,payload_hash) VALUES(?,?,?,?,?,?,?,?,?)",(str(run_id),'approving',operator_note,None,stamp,stamp,lease_id,exp_iso,p_hash))
+
+    # Fencing check BEFORE any journal side effect
+    with db('ops') as c:
+        chk=c.execute("SELECT lease_owner, lease_expires_at FROM approval_intents WHERE run_id=? AND decision='approving'",(str(run_id),)).fetchone()
+        if not chk or chk['lease_owner']!=lease_id or (chk['lease_expires_at'] and chk['lease_expires_at']<now()):
+            raise ValueError('stale_fencing_token: lease expired or superseded before journal write')
 
     memory_id=None
     try:
@@ -792,7 +814,7 @@ def acknowledge_alert(dedup_key):
 def shadow_mode_check():
     """v1.0 P02: Fail-closed operational readiness check across Flex freshness, Broker reconciliation, IPS coverage, workflow health, and Evals."""
     from . import broker
-    snap=finance.load_full_portfolio_snapshot()
+    snap=finance.decision_snapshot()
     rec=broker.reconcile_live_to_flex()
     pol=quant.evaluate_policy(snap, mode='AUDIT')
     ev_runs=list_eval_runs(1)

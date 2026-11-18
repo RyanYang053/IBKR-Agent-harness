@@ -125,6 +125,8 @@ def test_F06_transaction_reducer_strict_validation(isolated_env):
         {'symbol': 'SYM0', 'action': 'UNKNOWN', 'amount_base': '100', 'account': 'margin'},
         {'symbol': 'SYM0', 'action': 'BUY', 'amount_base': '100', 'estimated_fees_base': '-5', 'account': 'margin'},
         {'symbol': 'SYM0', 'action': 'SELL', 'amount_base': '500', 'account': 'margin'},  # only 100 held
+        {'symbol': 'OPTX', 'asset': 'OPT', 'action': 'BUY', 'amount_base': '500', 'account': 'margin'},  # missing qty/price
+        {'symbol': 'SYM0', 'action': 'BUY', 'amount_base': '100', 'currency': 'USD', 'account': 'margin'},  # missing FX
     ):
         with pytest.raises(ValueError):
             quant.simulate_allocation(snap, proposed_trades=[bad_trade])
@@ -143,6 +145,10 @@ def test_F07_account_buying_power_and_non_margin_tfsa(isolated_env):
     # Registered withdrawal exceeding cash blocked
     with pytest.raises(ValueError, match='withdrawal_exceeds_registered_cash'):
         quant.simulate_allocation(snap, cash_contribution=-200, contribution_account='tfsa')
+    # Margin borrowing without buying_power blocked
+    snap_nobp = {'status': 'ok', 'advice_allowed': True, 'as_of': date.today().isoformat(), 'nav': '1000', 'currency': 'CAD', 'accounts': [{'account': 'margin', 'nav': '1000', 'cash': '100', 'buying_power': None, 'allow_margin': True}], 'positions': []}
+    with pytest.raises(ValueError, match='missing_account_buying_power'):
+        quant.simulate_allocation(snap_nobp, proposed_trades=[{'symbol': 'QQQ', 'action': 'BUY', 'amount_base': '300', 'account': 'margin'}])
 
 def test_F08_option_delta_notional_zero_premium_and_invalid_greeks(isolated_env):
     snap = {

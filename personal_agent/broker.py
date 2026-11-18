@@ -403,10 +403,18 @@ def broker_state_for_risk():
         return {'status':brk.get('capture_status','unavailable'),'live_verified':False,'capture_status':brk.get('capture_status','unavailable'),'greeks':{}}
     return {'status':'ok','capture_status':brk['capture_status'],'snapshot_id':brk['snapshot_id'],'as_of':brk['as_of'],'entitlements':brk['entitlements'],'accounts':brk['accounts'],'greeks':brk['greeks'],'live_verified':bool(brk.get('live_verified'))}
 
-def enrich_snapshot_with_broker(csnap):
-    """Enrich a Flex PortfolioSnapshot ONLY with validated live broker option Greeks and margin state; never enriches from partial or replay captures."""
+def enrich_snapshot_with_broker(csnap, max_age_seconds=300):
+    """Enrich a Flex PortfolioSnapshot ONLY with fresh, validated live broker option Greeks and margin state; never enriches from stale, partial, or replay captures."""
     b_state=broker_state_for_risk()
     if not b_state.get('live_verified') or b_state.get('capture_status')!='ok':
+        return csnap
+    try:
+        obs_dt=datetime.fromisoformat(str(b_state.get('as_of') or ''))
+        if obs_dt.tzinfo is None: obs_dt=obs_dt.replace(tzinfo=timezone.utc)
+        age=(datetime.now(timezone.utc)-obs_dt.astimezone(timezone.utc)).total_seconds()
+        if age< -60.0 or age>float(max_age_seconds):
+            return csnap
+    except Exception:
         return csnap
     g_map=b_state.get('greeks') or {}
     acct_map=config().get('finance',{}).get('accounts') or {}

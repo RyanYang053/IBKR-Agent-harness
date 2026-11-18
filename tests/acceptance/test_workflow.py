@@ -53,6 +53,18 @@ def test_W03_crash_recovery_after_claim_and_ttl_expiry(isolated_env):
     with pytest.raises(ValueError, match='active lease owner'):
         ops.approve_workflow(wf_lease['run_id'], 'steal')
 
+    # Expired owner lease can be taken over cleanly, but immutable payload mismatch is rejected
+    wf_exp_lease = ops.run_workflow('equity_valuation_and_expectations', {'symbol': 'QQQ', 'propose_thesis': 'Expired lease', 'falsifier': 'Break'})
+    past_exp = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    p_hash = ops._param_hash({'prop': wf_exp_lease['proposed_approval'], 'note': 'orig_note'})
+    with core.db('ops') as c:
+        c.execute("UPDATE workflow_runs SET status='approving' WHERE run_id=?", (wf_exp_lease['run_id'],))
+        c.execute("INSERT INTO approval_intents(run_id,decision,operator_note,memory_id,created_at,updated_at,lease_owner,lease_expires_at,payload_hash) VALUES(?,?,?,?,?,?,?,?,?)", (wf_exp_lease['run_id'], 'approving', 'orig_note', None, core.now(), core.now(), 'dead_owner', past_exp, p_hash))
+    with pytest.raises(ValueError, match='immutable_approval_payload_mismatch'):
+        ops.approve_workflow(wf_exp_lease['run_id'], 'tampered_note')
+    rec_takeover = ops.approve_workflow(wf_exp_lease['run_id'], 'orig_note')
+    assert rec_takeover['status'] == 'completed'
+
     # Expired TTL blocked
     wf_exp = ops.run_workflow('equity_valuation_and_expectations', {'symbol': 'QQQ', 'propose_thesis': 'Expired test', 'falsifier': 'Break'})
     old_ts = (datetime.now(timezone.utc) - timedelta(hours=100)).isoformat()
@@ -81,7 +93,13 @@ def test_W04_ic_memo_blocks_failed_allocator_or_blocked_gate(isolated_env):
     assert ops.get_workflow_run(wf_nofals['run_id'])['acceptance_passed'] == 0
     with pytest.raises(ValueError):
         ops.approve_workflow(wf_nofals['run_id'], 'try nofals')
-    # 3. Complete valid IC memo -> acceptance_passed=1 and human approval commits journal
+    # 2b. Missing research completeness (no living thesis, no SEC filings, no evidence) -> acceptance_passed=0
+    wf_norsh = ops.run_workflow('investment_committee_memo', {'symbol': 'QQQ', 'amount_base': '500', 'account': 'margin', 'revenue_t0': '1000', 'shares': '100', 'falsifier': 'Margin < 10%'})
+    assert ops.get_workflow_run(wf_norsh['run_id'])['acceptance_passed'] == 0
+    with pytest.raises(ValueError):
+        ops.approve_workflow(wf_norsh['run_id'], 'try norsh')
+    # 3. Complete valid IC memo (with living thesis research) -> acceptance_passed=1 and human approval commits journal
+    quant.upsert_living_thesis('QQQ', 'Core index', 'FCF margin', 'Earnings', 'Margin < 10%')
     wf_ok = ops.run_workflow('investment_committee_memo', {'symbol': 'QQQ', 'amount_base': '500', 'account': 'margin', 'revenue_t0': '1000', 'shares': '100', 'falsifier': 'Margin < 10%'})
     assert ops.get_workflow_run(wf_ok['run_id'])['acceptance_passed'] == 1
     app = ops.approve_workflow(wf_ok['run_id'], 'valid ic approval')

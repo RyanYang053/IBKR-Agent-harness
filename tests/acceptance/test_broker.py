@@ -137,10 +137,17 @@ def test_B05_broker_enrichment_preserves_flex_and_updates_hash(isolated_env, mon
     broker.sync_broker_replay({'as_of': d, 'entitlements': {'options_greeks_live': True}, 'accounts': {}, 'positions': [{'accountId': 'U0000001', 'conid': '9001', 'asset': 'OPT', 'position': '1'}], 'greeks': {'9001': {'delta': 0.2, 'underlying_price': 100}}})
     assert broker.enrich_snapshot_with_broker(base_snap).snapshot_id == base_snap.snapshot_id
 
-    # Valid live capture enriches and produces distinct snapshot_ids for delta=0.2 vs delta=0.8
-    broker._persist_broker_snapshot('ibkr_tws_readonly', d, {'U0000001': {'BuyingPower': '4000'}}, [], {'9001': {'delta': 0.2, 'underlying_price': 100, 'status': 'live'}}, {'options_greeks_live': True}, capture_status='ok', live_verified=True)
+    # Stale live capture (>300s old) must NOT enrich canonical snapshot
+    stale_ts = '2020-01-01T00:00:00+00:00'
+    broker._persist_broker_snapshot('ibkr_tws_readonly', stale_ts, {'U0000001': {'BuyingPower': '4000'}}, [], {'9001': {'delta': 0.2, 'underlying_price': 100, 'status': 'live'}}, {'options_greeks_live': True}, capture_status='ok', live_verified=True)
+    assert broker.enrich_snapshot_with_broker(base_snap).snapshot_id == base_snap.snapshot_id
+
+    # Valid fresh live capture enriches and produces distinct snapshot_ids for delta=0.2 vs delta=0.8
+    from datetime import datetime, timezone
+    fresh_ts = datetime.now(timezone.utc).isoformat()
+    broker._persist_broker_snapshot('ibkr_tws_readonly', fresh_ts, {'U0000001': {'BuyingPower': '4000'}}, [], {'9001': {'delta': 0.2, 'underlying_price': 100, 'status': 'live'}}, {'options_greeks_live': True}, capture_status='ok', live_verified=True)
     s1 = broker.enrich_snapshot_with_broker(base_snap)
-    broker._persist_broker_snapshot('ibkr_tws_readonly', d, {'U0000001': {'BuyingPower': '4000'}}, [], {'9001': {'delta': 0.8, 'underlying_price': 100, 'status': 'live'}}, {'options_greeks_live': True}, capture_status='ok', live_verified=True)
+    broker._persist_broker_snapshot('ibkr_tws_readonly', fresh_ts, {'U0000001': {'BuyingPower': '4000'}}, [], {'9001': {'delta': 0.8, 'underlying_price': 100, 'status': 'live'}}, {'options_greeks_live': True}, capture_status='ok', live_verified=True)
     s2 = broker.enrich_snapshot_with_broker(base_snap)
     assert s1.positions[0].delta == Decimal('0.2') and s2.positions[0].delta == Decimal('0.8')
     assert s1.snapshot_id != base_snap.snapshot_id and s1.snapshot_id != s2.snapshot_id

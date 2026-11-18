@@ -10,13 +10,12 @@ def test_Q01_bars_open_close_provenance_and_atomic_backfill(isolated_env):
     b = market.bars('Q01T', 10)
     assert len(b) == 1 and b[0]['open'] == '100' and b[0]['adj_basis'] == 'split_and_dividend_adj'
 
-    # Missing open_px stays None and blocks next-bar-open backtest
+    # Actual provider sync_bars ingestion with missing 'o' preserves open=None and blocks next-bar-open backtest
+    from unittest.mock import patch
     d0 = date(2026, 1, 2)
-    with core.db('market') as c:
-        market.schema(c)
-        for i in range(45):
-            c.execute('INSERT INTO bars(symbol,timeframe,ts,close,currency,provider,freshness,open_px,adj_basis) VALUES(?,?,?,?,?,?,?,?,?)',
-                ('NOOPEN', '1Day', (d0 + timedelta(days=i)).isoformat(), '100', 'USD', 'yfinance', 'historical', None, 'split_and_dividend_adj'))
+    fake_bars = {'bars': {'NOOPEN': [{'t': (d0 + timedelta(days=i)).isoformat() + 'T00:00:00Z', 'c': 100.0} for i in range(45)]}}
+    with patch.object(market, 'alpaca_configured', return_value=True), patch.object(market, '_env', return_value='k'), patch.object(market, '_request', return_value=fake_bars):
+        market.sync_bars('NOOPEN', start='2026-01-01')
     assert market.bars('NOOPEN', 5)[0]['open'] is None
     assert quant.backtest_strategies('NOOPEN')['status'] == 'missing_open_price'
 

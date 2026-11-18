@@ -95,6 +95,14 @@ def test_C05_nonadditive_shares_and_bs_not_summed(isolated_env):
     ttm = market.compute_ttm_and_ratios('SHRCO', as_of='2026-11-15')
     assert ttm['ttm_metrics']['revenue'] == 460.0
     assert ttm['ratios']['roic_pre_tax_approx'] is not None
+    # Non-additive DilutedShares/EPSDiluted must NOT be YTD-differenced into bogus Q4=0
+    na_cf = {'facts': {'us-gaap': {'WeightedAverageNumberOfDilutedSharesOutstanding': {'units': {'shares': [
+        {'form': '10-Q', 'fp': 'Q1', 'fy': 2026, 'start': '2026-01-01', 'end': '2026-03-31', 'filed': '2026-05-01', 'val': 100.0},
+        {'form': '10-Q', 'fp': 'Q3', 'fy': 2026, 'start': '2026-01-01', 'end': '2026-09-30', 'filed': '2026-11-01', 'val': 100.0},
+        {'form': '10-K', 'fp': 'FY', 'fy': 2026, 'start': '2026-01-01', 'end': '2026-12-31', 'filed': '2026-11-15', 'val': 100.0},
+    ]}}}}}
+    market._normalize_sec_xbrl_facts('NACO', '0000333333', na_cf)
+    assert market.get_facts_pit('NACO', as_of='2026-12-01', period='2026Q4')['facts'] == []
 
 def test_C06_non_contiguous_quarters_block_ttm(isolated_env):
     for q in ('2025Q4', '2026Q1', '2026Q2', '2026Q4'):

@@ -213,7 +213,7 @@ def _cache_bars(symbol, rows, provider, adj_basis='split_and_dividend_adj'):
         schema(c)
         for row in rows:
             cl=str(row['close'])
-            op=str(row.get('open') if row.get('open') is not None else cl)
+            op=str(row['open']) if row.get('open') not in (None,'') else None
             c.execute('INSERT OR REPLACE INTO bars(symbol,timeframe,ts,close,currency,provider,freshness,open_px,adj_basis) VALUES(?,?,?,?,?,?,?,?,?)',(symbol,'1Day',row['ts'],cl,row.get('currency') or 'USD',provider,'historical',op,adj_basis))
         last=c.execute('SELECT ts FROM bars WHERE symbol=? AND timeframe=? ORDER BY ts DESC LIMIT 1',(symbol,'1Day')).fetchone()
     return last['ts'] if last else None
@@ -235,7 +235,7 @@ def sync_bars(symbol, start=None):
                 if page_token: q['page_token']=page_token
                 payload=_request('https://data.alpaca.markets/v2/stocks/bars?'+urllib.parse.urlencode(q), headers, 'alpaca', 0.35)
                 raw_bars=((payload.get('bars') or {}).get(symbol) or [])
-                all_saved.extend({'ts':row['t'][:10],'open':str(row.get('o',row['c'])),'close':str(row['c'])} for row in raw_bars if row.get('c') is not None and row.get('t'))
+                all_saved.extend({'ts':row['t'][:10],'open':str(row['o']) if row.get('o') is not None else None,'close':str(row['c'])} for row in raw_bars if row.get('c') is not None and row.get('t'))
                 page_token=payload.get('next_page_token')
                 if not page_token: break
             if need_full_backfill and all_saved:
@@ -256,9 +256,9 @@ def sync_bars(symbol, start=None):
         has_open='Open' in frame
         cur_code=str(getattr(frame,'currency',None) or 'USD')
         for index, close_val in frame['Close'].dropna().items():
-            open_val=frame['Open'].get(index, close_val) if has_open else close_val
-            if open_val!=open_val: open_val=close_val
-            saved.append({'ts':index.date().isoformat(),'open':str(round(Decimal(str(open_val)),6)),'close':str(round(Decimal(str(close_val)),6)),'currency':cur_code})
+            open_val=frame['Open'].get(index, None) if has_open else None
+            op_str=str(round(Decimal(str(open_val)),6)) if (open_val is not None and open_val==open_val) else None
+            saved.append({'ts':index.date().isoformat(),'open':op_str,'close':str(round(Decimal(str(close_val)),6)),'currency':cur_code})
     if need_full_backfill and saved:
         with db('market') as c:
             schema(c); c.execute('DELETE FROM bars WHERE symbol=? AND timeframe=?',(symbol,'1Day'))
@@ -478,6 +478,8 @@ def _normalize_sec_xbrl_facts(symbol, cik, facts):
                         pit_saved+=_upsert_pit_vintage(c, sym, f'{fy}{qp}', stmt_type, std_concept, val, unit_name, f_dt, ev['evidence_id'])
                         q_vals[qp]=(f_dt, val)
                         if qp not in q_earliest: q_earliest[qp]=(f_dt, val)
+                if std_concept in {'EPSDiluted','DilutedShares'}:
+                    continue
                 h1_list=sorted(by_fy.get(('h1', fy), []), key=lambda x:x[0])
                 if 'Q2' not in q_vals and 'Q1' in q_earliest and h1_list:
                     f_dt, h1_v = h1_list[0]
@@ -1008,6 +1010,6 @@ def generate_quality_features(symbol, as_of=''):
     rev_ttm=(ttm.get('ttm_metrics') or {}).get('revenue')
     op_m=(ttm.get('ratios') or {}).get('operating_margin')
     latest_fy=by_fy[fys[0]] if fys else {}
-    net_debt=(latest_fy.get('TotalDebt',0)-latest_fy.get('Cash',0)) if ('TotalDebt' in latest_fy or 'Cash' in latest_fy) else 0.0
+    net_debt=(latest_fy['TotalDebt']-latest_fy['Cash']) if ('TotalDebt' in latest_fy and 'Cash' in latest_fy) else None
     shares=latest_fy.get('DilutedShares') or latest_fy.get('SharesOutstanding')
     return {'roic':round(float(roic),4),'fcf_growth':round(float(fcf_g),4),'dilution_rate':round(float(dil),4),'valuation_discount_pct':None,'revenue_ttm':rev_ttm,'operating_margin':op_m,'net_debt':net_debt,'shares':shares,'source':'pit_financial_statements'}

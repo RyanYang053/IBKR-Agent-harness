@@ -6,7 +6,7 @@ import json, math
 from pathlib import Path
 import numpy as np
 from .core import ROOT, bounded, db, now
-from .finance import AccountRecord, PortfolioSnapshot, PositionRecord, canonical_snapshot, dec, load_full_portfolio_snapshot, performance, portfolio
+from .finance import AccountRecord, PortfolioSnapshot, PositionRecord, canonical_snapshot, dec, decision_snapshot, load_full_portfolio_snapshot, performance, portfolio
 from . import decision, market
 
 def _quant_schema(c):
@@ -127,7 +127,7 @@ def evaluate_policy(portfolio_snapshot=None, proposed_trade=None, market_snapsho
     """Pure canonical IPS Policy Engine (mode='AUDIT'|'PROPOSED_PLAN') over immutable per-account, per-contract PortfolioSnapshot."""
     pol=investment_policy or load_policy()
     if portfolio_snapshot is None:
-        csnap=load_full_portfolio_snapshot()
+        csnap=decision_snapshot()
     elif isinstance(portfolio_snapshot, dict) and 'nav' not in portfolio_snapshot:
         return {'status':'blocked','reason':portfolio_snapshot.get('status','unavailable'),'hard_blocks':[{'rule':'ledger_unavailable','detail':portfolio_snapshot.get('status','unavailable')}],'breaches':[],'risk_coverage_complete':False}
     else:
@@ -583,6 +583,9 @@ def simulate_allocation(portfolio_snapshot, cash_contribution=0.0, proposed_trad
         acct_t=str(tr.get('account') or tr.get('account_id') or '').strip()
         t_asset=str(tr.get('asset') or 'STK').upper()
         mult_v=dec(tr.get('multiplier') or (100 if t_asset=='OPT' else 1))
+        t_cur=str(tr.get('currency') or csnap.currency).upper()
+        if t_cur!=csnap.currency and tr.get('fx_rate_to_base') is None:
+            raise ValueError(f'missing_fx_rate:{t_cur}->{csnap.currency}')
         fx_v=dec(tr['fx_rate_to_base']) if tr.get('fx_rate_to_base') is not None else Decimal(1)
         if fx_v<=0 or mult_v<=0: raise ValueError('positive multiplier and fx_rate_to_base required')
         px_u=dec(tr['price_per_unit']) if tr.get('price_per_unit') not in (None,'') else None
@@ -612,9 +615,12 @@ def simulate_allocation(portfolio_snapshot, cash_contribution=0.0, proposed_trad
                 raise ValueError(f'missing_account_buying_power:{acct_t}')
             if (a_cur.cash-delta_v-fee)<Decimal('-0.000001'):
                 raise ValueError(f'insufficient_account_buying_power:{acct_t} needs {delta_v+fee}, has {a_cur.cash}')
-        elif delta_v>0 and allow_m and a_cur.buying_power is not None:
-            if (a_cur.buying_power-delta_v-fee)<Decimal('-0.000001'):
-                raise ValueError(f'insufficient_account_buying_power:{acct_t} buying_power={a_cur.buying_power} < {delta_v+fee}')
+        elif delta_v>0 and allow_m:
+            if a_cur.buying_power is not None:
+                if (a_cur.buying_power-delta_v-fee)<Decimal('-0.000001'):
+                    raise ValueError(f'insufficient_account_buying_power:{acct_t} buying_power={a_cur.buying_power} < {delta_v+fee}')
+            elif a_cur.cash is None or (a_cur.cash-delta_v-fee)<Decimal('-0.000001'):
+                raise ValueError(f'missing_account_buying_power:{acct_t} requires buying_power for margin borrowing')
         new_cash=((a_cur.cash if a_cur.cash is not None else Decimal(0))-delta_v-fee) if a_cur.cash is not None or delta_v<0 else None
         new_bp=(a_cur.buying_power-delta_v-fee) if a_cur.buying_power is not None else None
         accts[a_idx]=AccountRecord(account=a_cur.account, tax_bucket=a_cur.tax_bucket, nav=a_cur.nav-fee, cash=new_cash, allow_margin=allow_m, buying_power=new_bp, source=a_cur.source)
@@ -628,6 +634,8 @@ def simulate_allocation(portfolio_snapshot, cash_contribution=0.0, proposed_trad
             new_mv=p0.market_value_base+delta_v
             if p0.market_value_base>0 and new_mv<Decimal('-0.000001'):
                 raise ValueError(f'insufficient_account_position:{sym} in {acct_t}')
+            if act in {'SELL','TRIM'} and p0.quantity>0 and tr_qty is not None and tr_qty>p0.quantity:
+                raise ValueError(f'insufficient_account_position:{sym} in {acct_t} qty {tr_qty} > {p0.quantity}')
             if tr_qty is not None:
                 new_qty=p0.quantity+(tr_qty if delta_v>0 else -tr_qty)
             elif p0.market_value_base!=0 and p0.quantity!=0:
@@ -636,17 +644,21 @@ def simulate_allocation(portfolio_snapshot, cash_contribution=0.0, proposed_trad
                 new_qty=p0.quantity
             if act=='COVER' and p0.quantity<0 and new_qty>Decimal('0.000001'):
                 raise ValueError(f'cover_exceeds_short_position:{sym} in {acct_t}')
-            pos_list[p_idx]=PositionRecord(account=p0.account, conid=p0.conid, symbol=p0.symbol, asset=p0.asset, currency=p0.currency, quantity=new_qty, multiplier=p0.multiplier, market_value_base=max(Decimal(0), new_mv) if p0.market_value_base>=0 else new_mv, underlying_price=p0.underlying_price, underlying_currency=p0.underlying_currency, fx_rate_to_base=p0.fx_rate_to_base, delta=p0.delta, source=p0.source)
+            pos_list[p_idx]=PositionRecord(account=p0.account, conid=p0.conid, symbol=p0.symbol, asset=p0.asset, currency=p0.currency, quantity=new_qty, multiplier=p0.multiplier, market_value_base=max(Decimal(0), new_mv) if p0.market_value_base>=0 else new_mv, underlying_conid=p0.underlying_conid, cost_basis=p0.cost_basis, underlying_price=p0.underlying_price, underlying_currency=p0.underlying_currency, fx_rate_to_base=p0.fx_rate_to_base, delta=p0.delta, source=p0.source)
         else:
             if delta_v<0: raise ValueError(f'insufficient_account_position:unheld {sym} in {acct_t}')
+            if t_asset=='OPT' and tr_qty is None and px_u is None:
+                raise ValueError(f'quantity_or_price_required:{sym}')
             est_qty=tr_qty if tr_qty is not None else ((amt/(px_u*mult_v*fx_v)) if (px_u and px_u>0) else Decimal(0))
             pos_list.append(PositionRecord(
                 account=acct_t, conid=cid or sym, symbol=sym, asset=t_asset,
-                currency=csnap.currency, quantity=est_qty,
+                currency=t_cur, quantity=est_qty,
                 multiplier=mult_v,
                 market_value_base=delta_v,
+                underlying_conid=tr.get('underlying_conid'),
+                cost_basis=dec(tr['cost_basis']) if tr.get('cost_basis') not in (None,'') else None,
                 underlying_price=dec(tr['underlying_price']) if tr.get('underlying_price') is not None else None,
-                underlying_currency=str(tr.get('underlying_currency') or csnap.currency).upper(),
+                underlying_currency=str(tr.get('underlying_currency') or t_cur).upper(),
                 fx_rate_to_base=fx_v,
                 delta=dec(tr['delta']) if tr.get('delta') is not None else None,
             ))
@@ -667,7 +679,7 @@ def allocate_incremental_capital(amount_base, candidates=None, expected_returns=
     if add_amt<=0: raise ValueError('amount_base must be positive')
     pol=load_policy()
     from . import finance as _fin
-    csnap=load_full_portfolio_snapshot() if portfolio is _fin.portfolio else canonical_snapshot(portfolio())
+    csnap=decision_snapshot() if portfolio is _fin.portfolio else canonical_snapshot(portfolio())
     if csnap.status in {'unavailable','date_mismatch','unmatched_transfers','truncated_snapshot','missing_accounts','not_configured'} or csnap.nav<=0:
         return {'status':'blocked','reason':csnap.status}
     if not csnap.advice_allowed:
