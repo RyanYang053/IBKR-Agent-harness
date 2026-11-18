@@ -62,19 +62,20 @@ def is_us_equity(symbol):
     upper=symbol.upper()
     return not any(upper.endswith(suffix) for suffix in INTL_SUFFIXES)
 
-def universe():
+def universe(include_private=True):
     symbols=set()
     for raw in market_config().get('watchlist') or []:
         text=str(raw).strip().upper()
         if text and text!='CASH': symbols.add(text)
-    try:
-        snap=portfolio()
-    except Exception:
-        snap={}
-    for row in snap.get('positions') or []:
-        if (row.get('asset') or '').upper()!='STK': continue
-        text=str(row.get('symbol') or '').strip().upper()
-        if text and text!='CASH': symbols.add(text)
+    if include_private:
+        try:
+            snap=portfolio()
+        except Exception:
+            snap={}
+        for row in snap.get('positions') or []:
+            if (row.get('asset') or '').upper()!='STK': continue
+            text=str(row.get('symbol') or '').strip().upper()
+            if text and text!='CASH': symbols.add(text)
     return sorted(symbols)
 
 def _throttle(provider, min_seconds):
@@ -534,8 +535,8 @@ def sync_all():
     sections_out=[sync_filing_sections(symbol) for symbol in universe() if is_us_equity(symbol)] if '@' in str(market_config().get('edgar_contact') or '') else []
     return {'quotes':{'live':quotes['live'],'unavailable':quotes['unavailable']},'bars':bars_out,'news':news_out,'earnings':earnings_out,'macro':sync_macro(),'fx':sync_fx(),'filings':filings_out,'filing_sections':len(sections_out),'orders':'disabled'}
 
-def quote_board():
-    return [_present(symbol) if is_us_equity(symbol) else {'symbol':symbol,'price':None,'freshness':'unavailable','provider':None,'limitations':['No live US feed.']} for symbol in universe()]
+def quote_board(include_private=True):
+    return [_present(symbol) if is_us_equity(symbol) else {'symbol':symbol,'price':None,'freshness':'unavailable','provider':None,'limitations':['No live US feed.']} for symbol in universe(include_private=include_private)]
 
 async def _stream_once(symbols):
     import websockets

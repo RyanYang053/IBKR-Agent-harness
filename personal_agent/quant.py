@@ -148,20 +148,26 @@ def evaluate_policy(portfolio_snapshot=None, proposed_trade=None, market_snapsho
     max_gross_lev=float(pol.get('max_gross_economic_leverage', 1.35))
     dd_budget=float(pol.get('max_drawdown_budget', -0.25))
 
+    pos_entries=[]
     pos_vals={}
     pos_assets={}
     for p in (tax_all.get('positions') or []):
         sym=p['symbol'].upper()
-        pos_vals[sym]=pos_vals.get(sym, 0.0)+float(dec(p['total_value_base']))
-        pos_assets[sym]=(p.get('asset') or 'STK').upper()
+        acct_p=str(p.get('account') or '').strip()
+        val_p=float(dec(p['total_value_base']))
+        asset_p=(p.get('asset') or 'STK').upper()
+        pos_entries.append({'symbol':sym,'account':acct_p,'value':val_p,'asset':asset_p,'raw':p})
+        pos_vals[sym]=pos_vals.get(sym, 0.0)+val_p
+        pos_assets[sym]=asset_p
 
-    post_vals=dict(pos_vals)
+    post_entries=[dict(e) for e in pos_entries]
     post_cash=cash
     hard_blocks=[]
     trade_acct=None
     trade_sym=None
     trade_act=None
     trade_amt=0.0
+    acct_constraints=pol.get('account_constraints') or {}
     if proposed_trade:
         trade_sym=str(proposed_trade.get('symbol') or '').strip().upper()
         trade_act=str(proposed_trade.get('action') or 'BUY').strip().upper()
@@ -171,7 +177,18 @@ def evaluate_policy(portfolio_snapshot=None, proposed_trade=None, market_snapsho
         if trade_sym and trade_amt>0:
             pos_assets.setdefault(trade_sym, trade_asset)
             if trade_act in {'BUY','ADD'}:
-                post_vals[trade_sym]=post_vals.get(trade_sym, 0.0)+trade_amt
+                if trade_acct:
+                    acct_row=next((a for a in acct_rows if a['account']==trade_acct), None)
+                    acct_cash=float(dec(acct_row.get('cash') or 0)) if (acct_row and acct_row.get('cash') not in (None,'')) else None
+                    acct_rule=acct_constraints.get(trade_acct) or acct_constraints.get(trade_acct.lower()) or {}
+                    allow_margin=acct_rule.get('allow_margin', False if trade_acct.lower() in {'tfsa','rrsp','fhsa'} else True)
+                    if acct_cash is not None and not allow_margin and trade_amt>acct_cash+1e-6:
+                        hard_blocks.append({'rule':'insufficient_account_buying_power','symbol':trade_sym,'account':trade_acct,'requested_buy':round(trade_amt,2),'available_cash_base':round(acct_cash,2)})
+                matched_idx=next((i for i,e in enumerate(post_entries) if e['symbol']==trade_sym and (not trade_acct or e['account']==trade_acct)), None)
+                if matched_idx is not None:
+                    post_entries[matched_idx]['value']+=trade_amt
+                else:
+                    post_entries.append({'symbol':trade_sym,'account':trade_acct,'value':trade_amt,'asset':trade_asset,'raw':proposed_trade})
                 post_cash-=trade_amt
             elif trade_act in {'SELL','TRIM'}:
                 acct_val=0.0
@@ -184,44 +201,57 @@ def evaluate_policy(portfolio_snapshot=None, proposed_trade=None, market_snapsho
                     acct_val=pos_vals.get(trade_sym, 0.0)
                 if acct_val<=0 or trade_amt>acct_val*1.001:
                     hard_blocks.append({'rule':'insufficient_account_position','symbol':trade_sym,'account':trade_acct or 'combined','requested_sell':round(trade_amt,2),'available_position_base':round(acct_val,2)})
-                post_vals[trade_sym]=max(0.0, post_vals.get(trade_sym, 0.0)-trade_amt)
+                matched_idx=next((i for i,e in enumerate(post_entries) if e['symbol']==trade_sym and (not trade_acct or e['account']==trade_acct)), None)
+                if matched_idx is not None:
+                    post_entries[matched_idx]['value']=max(0.0, post_entries[matched_idx]['value']-trade_amt)
                 post_cash+=trade_amt
 
-    nom_eq=0.0; net_econ_eq=0.0; gross_econ_eq=0.0; opt_wt=0.0; opt_econ_wt=0.0; core_wt=0.0; tac_wt=0.0
-    breaches=[]; pos_econ=[]
-    opt_delta_default=float((proposed_trade or {}).get('delta') or 0.50)
-    for sym, val in post_vals.items():
+    nom_eq=0.0; net_econ_eq=0.0; gross_econ_eq=0.0; opt_wt=0.0; opt_econ_wt=0.0; opt_unknown=False; core_wt=0.0; tac_wt=0.0
+    breaches=[]; pos_econ=[]; sym_net_vals={}
+    for e in post_entries:
+        sym=e['symbol']; val=e['value']; asset=e['asset']; raw=e['raw']
         if abs(val)<1e-6 and sym!=trade_sym: continue
-        asset=pos_assets.get(sym, 'STK')
         w=val/nav
         if asset=='OPT':
             opt_wt+=abs(w)
-            delta_use=opt_delta_default if (sym==trade_sym and proposed_trade and proposed_trade.get('delta') is not None) else 0.50
-            ew=w*delta_use
-            opt_econ_wt+=ew
-            net_econ_eq+=ew
-            gross_econ_eq+=abs(ew)
-            tac_wt+=max(0.0, w)
-            pos_econ.append({'symbol':sym,'asset':'OPT','nominal_weight':round(w,4),'daily_leverage_mult':delta_use,'economic_weight':round(ew,4),'bucket':'tactical_option'})
+            delta_v=raw.get('delta'); und_px=raw.get('underlying_price'); mult_v=raw.get('multiplier')
+            lots=raw.get('lots') or []
+            qty_v=raw.get('quantity') if raw.get('quantity') is not None else (sum(float(dec(l.get('quantity') or 0)) for l in lots) if lots else None)
+            if delta_v is not None and und_px is not None and qty_v is not None:
+                m_val=float(mult_v) if mult_v is not None else 100.0
+                ew=(float(qty_v)*m_val*float(und_px)*float(delta_v))/nav
+                opt_econ_wt+=ew
+                net_econ_eq+=ew
+                gross_econ_eq+=abs(ew)
+                tac_wt+=max(0.0, w)
+                pos_econ.append({'symbol':sym,'account':e['account'],'asset':'OPT','nominal_weight':round(w,4),'delta':float(delta_v),'economic_weight':round(ew,4),'bucket':'tactical_option'})
+            else:
+                opt_unknown=True
+                hard_blocks.append({'rule':'option_delta_notional_unavailable','symbol':sym,'detail':'Option position lacks contract quantity, underlying_price, or delta; refusing silent premium-based exposure.'})
+                pos_econ.append({'symbol':sym,'account':e['account'],'asset':'OPT','nominal_weight':round(w,4),'economic_weight':None,'bucket':'tactical_option'})
             continue
         mult=lev_map.get(sym, 1.0)
         ew=w*mult
         nom_eq+=w; net_econ_eq+=ew; gross_econ_eq+=abs(ew)
-        if sym in core_set:
-            core_wt+=w
-        else:
-            tac_wt+=w
-            if abs(w)>max_single:
-                breaches.append({'rule':'max_single_stock_weight','symbol':sym,'actual':round(w,4),'limit':max_single})
-        pos_econ.append({'symbol':sym,'asset':asset,'nominal_weight':round(w,4),'daily_leverage_mult':mult,'economic_weight':round(ew,4),'bucket':'core' if sym in core_set else 'tactical'})
+        sym_net_vals[sym]=sym_net_vals.get(sym, 0.0)+val
+        if sym in core_set: core_wt+=w
+        else: tac_wt+=w
+        pos_econ.append({'symbol':sym,'account':e['account'],'asset':asset,'nominal_weight':round(w,4),'daily_leverage_mult':mult,'economic_weight':round(ew,4),'bucket':'core' if sym in core_set else 'tactical'})
+    for sym, tot_v in sym_net_vals.items():
+        if sym not in core_set and abs(tot_v/nav)>max_single:
+            breaches.append({'rule':'max_single_stock_weight','symbol':sym,'actual':round(tot_v/nav,4),'limit':max_single})
 
     cash_wt=post_cash/nav
     if cash_wt<min_cash:
         breaches.append({'rule':'min_cash_reserve','actual':round(cash_wt,4),'limit':min_cash})
     if abs(net_econ_eq)>max_net_lev:
-        breaches.append({'rule':'max_economic_leverage','actual':round(net_econ_eq,4),'limit':max_net_lev})
+        b_lev={'rule':'max_economic_leverage','actual':round(net_econ_eq,4),'limit':max_net_lev}
+        breaches.append(b_lev)
+        if proposed_trade: hard_blocks.append(b_lev)
     if gross_econ_eq>max_gross_lev:
-        breaches.append({'rule':'max_gross_economic_leverage','actual':round(gross_econ_eq,4),'limit':max_gross_lev})
+        b_glev={'rule':'max_gross_economic_leverage','actual':round(gross_econ_eq,4),'limit':max_gross_lev}
+        breaches.append(b_glev)
+        if proposed_trade: hard_blocks.append(b_glev)
     if core_wt<core_min:
         breaches.append({'rule':'core_allocation_below_target','actual':round(core_wt,4),'target_min':core_min})
     if tac_wt>tactical_max:
@@ -258,7 +288,7 @@ def evaluate_policy(portfolio_snapshot=None, proposed_trade=None, market_snapsho
             'gross_economic_exposure':round(gross_econ_eq,4),
             'cash_weight':round(cash_wt,4),
             'options_nominal_weight':round(opt_wt,4),
-            'options_delta_equiv_weight':round(opt_econ_wt,4),
+            'options_delta_equiv_weight':None if opt_unknown else round(opt_econ_wt,4),
             'core_weight':round(core_wt,4),
             'tactical_weight':round(tac_wt,4)
         },
@@ -534,10 +564,13 @@ def evaluate_expectation_gap(symbol, period=''):
         rows=[dict(r) for r in c.execute('SELECT * FROM earnings_expectations WHERE symbol=? AND period=? ORDER BY id ASC',(sym,per))]
     if not rows: return {'symbol':sym,'status':'no_pre_earnings_snapshot','limitations':['Record pre-earnings guidance or model expectations before earnings; consensus is never fabricated.']}
     pre=next((r for r in rows if r['entry_type']=='pre_earnings'), rows[0])
-    act=next((r for r in reversed(rows) if any(r[k] is not None for k in ('act_revenue','act_eps','act_guidance_growth'))), pre)
-    rev_surp=((act['act_revenue']-pre['exp_revenue'])/abs(pre['exp_revenue'])) if (act['act_revenue'] is not None and pre['exp_revenue']) else None
-    eps_surp=((act['act_eps']-pre['exp_eps'])/abs(pre['exp_eps'])) if (act['act_eps'] is not None and pre['exp_eps']) else None
-    guide_diff=(act['act_guidance_growth']-pre['exp_guidance_growth']) if (act['act_guidance_growth'] is not None and pre['exp_guidance_growth'] is not None) else None
+    merged_act={'act_revenue':pre.get('act_revenue'),'act_eps':pre.get('act_eps'),'act_guidance_growth':pre.get('act_guidance_growth'),'updated_post_at':pre.get('updated_post_at')}
+    for r in rows:
+        for k in ('act_revenue','act_eps','act_guidance_growth','updated_post_at'):
+            if r.get(k) is not None: merged_act[k]=r[k]
+    rev_surp=((merged_act['act_revenue']-pre['exp_revenue'])/abs(pre['exp_revenue'])) if (merged_act['act_revenue'] is not None and pre['exp_revenue']) else None
+    eps_surp=((merged_act['act_eps']-pre['exp_eps'])/abs(pre['exp_eps'])) if (merged_act['act_eps'] is not None and pre['exp_eps']) else None
+    guide_diff=(merged_act['act_guidance_growth']-pre['exp_guidance_growth']) if (merged_act['act_guidance_growth'] is not None and pre['exp_guidance_growth'] is not None) else None
     verdict='awaiting_actuals'
     if any(x is not None for x in (rev_surp, eps_surp, guide_diff)):
         if (guide_diff is not None and guide_diff<-0.01) or (rev_surp is not None and rev_surp<-0.02):
@@ -546,21 +579,24 @@ def evaluate_expectation_gap(symbol, period=''):
             verdict='positive_beat_and_raise'
         else:
             verdict='inline_with_prior_expectations'
-    snap_merged={**pre,'act_revenue':act['act_revenue'],'act_eps':act['act_eps'],'act_guidance_growth':act['act_guidance_growth'],'updated_post_at':act['updated_post_at'],'history_entries':len(rows)}
+    snap_merged={**pre,**merged_act,'history_entries':len(rows)}
     return {'symbol':sym,'period':per,'basis':pre['basis'],'verdict':verdict,'revenue_surprise_pct':round(rev_surp,4) if rev_surp is not None else None,'eps_surprise_pct':round(eps_surp,4) if eps_surp is not None else None,'guidance_growth_delta':round(guide_diff,4) if guide_diff is not None else None,'snapshot':snap_merged}
 
 def allocate_incremental_capital(amount_base, candidates=None, expected_returns=None, account_constraints=None):
-    """Covariance-aware Multi-Asset Robust Portfolio Optimizer + Opportunity Cost comparator under IPS limits, Quarter-Kelly, and Canadian account location."""
+    """Full-Portfolio Covariance-aware Multi-Asset Robust Optimizer + Opportunity Cost comparator under IPS limits, PSD covariance, Quarter-Kelly, and Canadian account location."""
     add_amt=float(dec(amount_base))
     if add_amt<=0: raise ValueError('amount_base must be positive')
     pol=load_policy()
     snap=portfolio()
     if 'nav' not in snap: return {'status':'blocked','reason':snap.get('status','unavailable')}
+    if not snap.get('advice_allowed'):
+        return {'status':'blocked_stale_ledger','reason':'Ledger snapshot is stale or incomplete; sync Flex before optimizing allocation.'}
     nav=float(dec(snap['nav'])); new_nav=nav+add_amt
     tax=decision.tax_positions()
     pos_map={p['symbol'].upper():p for p in (tax.get('positions') or [])}
     cand_list=[str(s).strip().upper() for s in (candidates or list(pos_map.keys())[:4]+['QQQ']) if str(s).strip()]
     cand_list=list(dict.fromkeys(cand_list))[:8]
+    all_syms=list(cand_list)+[s for s in pos_map if s not in cand_list and (pos_map[s].get('asset') or 'STK').upper()=='STK']
     exp_map={k.upper():float(v) for k,v in (expected_returns or {}).items()}
     rf=0.04
     m_pt=market.macro('DGS3MO')
@@ -574,23 +610,23 @@ def allocate_incremental_capital(amount_base, candidates=None, expected_returns=
     core_set={s.upper() for s in (pol.get('core_symbols') or [])}
     k_frac=float(pol.get('kelly_fraction', 0.25))
     max_single=float(pol.get('max_single_stock_weight', 0.15))
+    tactical_max=float(pol.get('tactical_max_weight', 0.55))
     kappa=float(pol.get('robust_uncertainty_penalty', 0.50))
     lam=float(pol.get('risk_aversion_lambda', 3.0))
     min_cash=float(pol.get('min_cash_reserve', 0.05))
     cash_cur=float(sum((dec(a['cash']) for a in snap.get('accounts',[]) if a.get('cash') not in (None,'')), Decimal(0)))
 
-    # Build covariance matrix & CAPM/ERP priors across candidates
-    ret_series={sym:decision._bar_returns(sym, 120) for sym in cand_list}
-    m=len(cand_list)
-    cov_mat=np.zeros((m, m), dtype=float)
+    # Build full-portfolio covariance matrix & CAPM/ERP priors across candidates + all existing holdings
+    ret_series={sym:decision._bar_returns(sym, 120) for sym in all_syms}
+    m_cand=len(cand_list); m_all=len(all_syms)
+    cov_raw=np.zeros((m_all, m_all), dtype=float)
     vols={}; betas={}; mus={}; mu_robust={}; mu_sources={}
-    for i, sym in enumerate(cand_list):
+    for i, sym in enumerate(all_syms):
         r_map=ret_series[sym]
         r_vals=list(r_map.values())
         t_obs=len(r_vals)
         ann_vol=math.sqrt((sum((x-sum(r_vals)/t_obs)**2 for x in r_vals)/max(1,t_obs-1))*252.0) if t_obs>=20 else 0.30
         vols[sym]=ann_vol
-        # Empirical beta vs benchmark for transparent CAPM prior
         beta_val=1.0
         if len(bench_rets)>=20 and t_obs>=20:
             common=sorted(set(r_map.keys()) & set(bench_rets.keys()))
@@ -608,36 +644,51 @@ def allocate_incremental_capital(amount_base, candidates=None, expected_returns=
         mus[sym]=mu
         unc_pen=kappa*(ann_vol/math.sqrt(max(20, t_obs)))
         mu_robust[sym]=mu-unc_pen
-        cov_mat[i,i]=ann_vol**2
+        cov_raw[i,i]=ann_vol**2
         for j in range(i):
-            sym_j=cand_list[j]
+            sym_j=all_syms[j]
             rho, _n=decision._pairwise_corr(r_map, ret_series[sym_j])
             cov_ij=(rho if rho is not None else 0.35)*ann_vol*vols[sym_j]
-            cov_mat[i,j]=cov_ij; cov_mat[j,i]=cov_ij
+            cov_raw[i,j]=cov_ij; cov_raw[j,i]=cov_ij
 
-    # Optimize incremental allocation weights delta_w (sum <= 1) over candidates + cash
-    cur_vals_vec=np.array([float(dec(pos_map[s]['total_value_base'])) if s in pos_map else 0.0 for s in cand_list], dtype=float)
-    w_cur=cur_vals_vec/new_nav
+    # Project covariance matrix onto Positive Semidefinite (PSD) cone
+    if m_all>0:
+        eigvals, eigvecs=np.linalg.eigh(cov_raw)
+        cov_all=eigvecs@np.diag(np.maximum(eigvals, 1e-6))@eigvecs.T
+    else:
+        cov_all=cov_raw
+
+    # Optimize incremental allocation weights delta_w over candidates (in full-portfolio space)
+    cur_vals_all=np.array([float(dec(pos_map[s]['total_value_base'])) if s in pos_map else 0.0 for s in all_syms], dtype=float)
+    w_cur_all=cur_vals_all/new_nav
     add_share=add_amt/new_nav
-    ub_total=np.array([0.60 if s in core_set else max_single for s in cand_list], dtype=float)
-    ub_delta=np.maximum(0.0, (ub_total-w_cur)/max(1e-9, add_share))
-    # Enforce minimum cash reserve after allocation
+    kelly_caps={s:max(0.0, min(max_single if s not in core_set else (1.0-min_cash), k_frac*(mus[s]-rf)/max(0.01, vols[s]**2))) for s in cand_list}
+    ub_total=np.array([min(1.0-min_cash, kelly_caps[s]) if s in core_set else min(max_single, kelly_caps[s]) for s in cand_list], dtype=float)
+    ub_delta=np.maximum(0.0, (ub_total-w_cur_all[:m_cand])/max(1e-9, add_share))
     max_deploy_frac=max(0.0, min(1.0, (cash_cur+add_amt-min_cash*new_nav)/add_amt))
     if account_constraints and account_constraints.get('max_deploy_base') is not None:
         max_deploy_frac=min(max_deploy_frac, max(0.0, float(account_constraints['max_deploy_base'])/add_amt))
-    mu_vec=np.array([mu_robust[s]-rf for s in cand_list], dtype=float)
-    # Frank-Wolfe / projected gradient on {0 <= x <= ub_delta, sum(x) <= max_deploy_frac}
-    x=np.zeros(m, dtype=float)
+    cur_tac_w=sum(float(w_cur_all[i]) for i,s in enumerate(all_syms) if s not in core_set)
+    max_tac_add=max(0.0, (tactical_max-cur_tac_w)/max(1e-9, add_share))
+    mu_vec_all=np.array([mu_robust[s]-rf for s in all_syms], dtype=float)
+
+    x=np.zeros(m_cand, dtype=float)
     for step in range(80):
-        w_post=w_cur+x*add_share
-        grad=add_share*(mu_vec-lam*(cov_mat@w_post))
-        # Solve linear subproblem: max grad^T s s.t. 0 <= s_i <= ub_delta_i, sum(s) <= max_deploy_frac
-        s_star=np.zeros(m, dtype=float)
-        rem=max_deploy_frac
+        w_post_all=w_cur_all.copy()
+        w_post_all[:m_cand]+=x*add_share
+        grad_all=add_share*(mu_vec_all-lam*(cov_all@w_post_all))
+        grad=grad_all[:m_cand]
+        s_star=np.zeros(m_cand, dtype=float)
+        rem=max_deploy_frac; rem_tac=max_tac_add
         for idx in np.argsort(-grad):
             if grad[idx]<=0 or rem<=1e-9: break
-            alloc=min(ub_delta[idx], rem)
-            s_star[idx]=alloc; rem-=alloc
+            cap_i=ub_delta[idx]
+            if cand_list[idx] not in core_set:
+                cap_i=min(cap_i, rem_tac)
+            alloc=min(cap_i, rem)
+            if alloc>1e-9:
+                s_star[idx]=alloc; rem-=alloc
+                if cand_list[idx] not in core_set: rem_tac-=alloc
         gamma=2.0/(step+2.0)
         x=(1.0-gamma)*x+gamma*s_star
 
@@ -648,24 +699,27 @@ def allocate_incremental_capital(amount_base, candidates=None, expected_returns=
         if frac<0.01: continue
         amt_i=round(frac*add_amt, 2)
         deployed_amt+=amt_i
-        opt_alloc.append({'symbol':sym,'allocation_pct':round(frac*100.0,2),'amount_base':amt_i,'post_weight_of_nav':round(float(w_cur[i]+frac*add_share),4)})
+        opt_alloc.append({'symbol':sym,'allocation_pct':round(frac*100.0,2),'amount_base':amt_i,'post_weight_of_nav':round(float(w_cur_all[i]+frac*add_share),4)})
     hold_cash_amt=round(max(0.0, add_amt-deployed_amt), 2)
-    w_opt_post=w_cur+(x*add_share)
-    port_vol_post=float(math.sqrt(max(0.0, float(w_opt_post.T@cov_mat@w_opt_post)))) if m>0 else 0.0
-    port_ret_post=float(np.dot(w_opt_post, np.array([mus[s] for s in cand_list])))+(max(0.0, (cash_cur+hold_cash_amt)/new_nav))*rf
+    w_opt_post_all=w_cur_all.copy()
+    w_opt_post_all[:m_cand]+=(x*add_share)
+    port_vol_post=float(math.sqrt(max(0.0, float(w_opt_post_all.T@cov_all@w_opt_post_all)))) if m_all>0 else 0.0
+    port_ret_post=float(np.dot(w_opt_post_all, np.array([mus[s] for s in all_syms])))+(max(0.0, (cash_cur+hold_cash_amt)/new_nav))*rf
+    top_pick=opt_alloc[0] if opt_alloc else None
+    pol_check=evaluate_policy(portfolio_snapshot=snap, proposed_trade={'symbol':top_pick['symbol'],'action':'BUY','amount_base':str(top_pick['amount_base'])} if top_pick else None, investment_policy=pol)
 
     comparisons=[]
     for i, sym in enumerate(cand_list):
-        cur_val=float(cur_vals_vec[i])
+        cur_val=float(cur_vals_all[i])
         post_w=(cur_val+add_amt)/new_nav
         ann_vol=vols[sym]; mu=mus[sym]
-        kelly_cap=max(0.0, min(max_single if sym not in core_set else 0.60, k_frac*(mu-rf)/max(0.01, ann_vol**2)))
+        kelly_cap=kelly_caps[sym]
         has_us_div=False
         if sym in pos_map:
             has_us_div=any(dec(l.get('withholding_tax_local') or '0')!=0 for l in (pos_map[sym].get('lots') or []))
         best_acct='taxable' if has_us_div else ('tfsa' if mu>=0.12 and lev_map.get(sym,1.0)<=1.0 else 'taxable')
         policy_ok=(sym in core_set) or (post_w<=max_single)
-        mctr_post=float((cov_mat@w_opt_post)[i]/max(1e-6, port_vol_post)) if port_vol_post>0 else ann_vol
+        mctr_post=float((cov_all@w_opt_post_all)[i]/max(1e-6, port_vol_post)) if port_vol_post>0 else ann_vol
         comparisons.append({
             'candidate':sym,
             'bucket':'core' if sym in core_set else 'tactical',
@@ -692,12 +746,13 @@ def allocate_incremental_capital(amount_base, candidates=None, expected_returns=
         'optimal_multi_asset_allocation':{
             'allocations':opt_alloc,
             'hold_cash_base':hold_cash_amt,
-            'post_sleeve_expected_return':round(port_ret_post,4),
-            'post_sleeve_annualized_vol':round(port_vol_post,4),
-            'optimization_method':'robust_covariance_frank_wolfe_ips_constrained'
+            'post_portfolio_expected_return':round(port_ret_post,4),
+            'post_portfolio_annualized_vol':round(port_vol_post,4),
+            'optimization_method':'full_portfolio_psd_covariance_kelly_ips_frank_wolfe',
+            'post_allocation_policy_status':pol_check.get('status')
         },
         'candidates':comparisons,
-        'limitations':['Unprovided expected returns use CAPM/ERP baseline (rf + beta * ERP) penalized by estimation uncertainty rather than policy target return.']
+        'limitations':['Unprovided expected returns use CAPM/ERP baseline (rf + beta * ERP) penalized by estimation uncertainty; optimization spans all held equities with PSD-projected covariance.']
     }
 
 def _norm_cdf(x): return 0.5*(1.0+math.erf(x/math.sqrt(2.0)))
@@ -753,6 +808,8 @@ def analyze_option_strategy(strategy, spot, strike, days_to_expiry, premium='', 
                 solved_iv=round(0.5*(lo+hi), 4)
                 iv=solved_iv
                 iv_status='solved'
+    if iv_status in {'outside_no_arbitrage_bounds','out_of_solver_bracket'}:
+        return {'strategy':strat,'spot':s,'strike':k,'days_to_expiry':dte,'implied_vol_used':None,'solved_iv_from_premium':None,'iv_solver_status':iv_status,'no_arbitrage_bounds':[round(lb,4), round(ub,4)],'option_premium_per_share':float(premium),'greeks':None,'limitations':['Option premium violates European BSM no-arbitrage bounds or solver range; refusing to emit trade payoff metrics.']}
     greeks=_bsm(s, k, dte, r, iv, kind)
     prem=float(premium) if str(premium or '').strip()!='' else greeks['theoretical_price']
     basis=float(cost_basis) if str(cost_basis or '').strip()!='' else s

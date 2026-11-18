@@ -175,25 +175,30 @@ def _cash_rows():
         schema(c)
         return [dict(r) | {'fields':json.loads(r['payload'])} for r in c.execute("SELECT * FROM records WHERE category='cash' ORDER BY rowid")]
 def _flow_amount(fields):
-    raw=fields.get('amount') or fields.get('amountInBase')
-    return dec(raw)
+    if fields.get('amountInBase') not in (None,''):
+        return dec(fields['amountInBase'])
+    amt=dec(fields.get('amount') or 0)
+    fx=fields.get('fxRateToBase')
+    if fx not in (None,''):
+        return amt*dec(fx)
+    return amt
 def matched_transfers(rows):
-    """Pair opposite cash transfers across configured accounts. Unmatched rows stay unmatched."""
+    """Pair opposite cash transfers across configured accounts using normalized Decimal amounts. Unmatched rows stay unmatched."""
     open_rows=[]
     matched=set(); unmatched=[]
     for row in rows:
         kind=(row['fields'].get('type') or '').strip().casefold()
         if kind not in TRANSFER_TYPES: continue
         amount=_flow_amount(row['fields']); when=day(row['fields'].get('dateTime') or row['fields'].get('reportDate') or row['fields'].get('date') or '')
-        cur=(row['fields'].get('currency') or '').upper(); key=(when,cur,str(abs(amount)))
-        partner=next((i for i,cand in enumerate(open_rows) if cand[0]==key and cand[1]['account']!=row['account'] and _flow_amount(cand[1]['fields'])==-amount), None)
+        cur=(row['fields'].get('currency') or '').upper()
+        partner=next((i for i,cand in enumerate(open_rows) if cand[0]==when and cand[1]==cur and cand[3]['account']!=row['account'] and cand[2]==-amount), None)
         ident=(row['account'],row['record_id'])
         if partner is None:
-            open_rows.append((key,row))
+            open_rows.append((when,cur,amount,row))
         else:
             other=open_rows.pop(partner)
-            matched.add(ident); matched.add((other[1]['account'],other[1]['record_id']))
-    for _,row in open_rows:
+            matched.add(ident); matched.add((other[3]['account'],other[3]['record_id']))
+    for _,_,_,row in open_rows:
         unmatched.append({'account':row['account'],'record_id':row['record_id'],'amount':str(_flow_amount(row['fields']))})
     return matched,unmatched
 def _external_by_date(rows,matched):
@@ -256,7 +261,8 @@ def performance():
         return {'status':'unmatched_transfers','as_of':snap.get('as_of'),'currency':cfg['base_currency'],'nav':snap.get('nav'),'contributions':str(contributions),'withdrawals':str(withdrawals),'unmatched_transfers':unmatched,'twr':None,'xirr':None,'limitations':limitations+['Combined return is blocked until every internal transfer has its opposite leg.']}
     chain=Decimal(1); intervals=[]
     for (d0,v0),(d1,v1) in zip(series,series[1:]):
-        external=flows.get(d1.isoformat(),Decimal(0))
+        d0_iso, d1_iso = d0.isoformat(), d1.isoformat()
+        external=sum((amt for f_d,amt in flows.items() if d0_iso<f_d<=d1_iso), Decimal(0))
         if v0<=0: return {'status':'invalid_nav','twr':None,'xirr':None,'limitations':limitations+['A nonpositive opening NAV blocks the daily approximation.']}
         growth=(v1-external)/v0-1
         if growth<=Decimal('-1'): return {'status':'invalid_interval','twr':None,'xirr':None,'limitations':limitations}

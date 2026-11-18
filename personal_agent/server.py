@@ -203,7 +203,7 @@ def make_server(domain, public_only=False):
         @tool()
         def get_quotes()->list:
             """Read cached quotes with freshness. A missing live quote is not replaced by a delayed price."""
-            return market.quote_board()
+            return market.quote_board(include_private=not public_only)
         @tool()
         def get_bars(symbol:str,limit:int=120)->list:
             """Read cached daily closes. These are historical, never live."""

@@ -171,13 +171,18 @@ def knowledge_checks(home):
     # 2. Unified evaluate_policy checks oversell & multi-asset allocator in clean two_accounts ledger
     with tempfile.TemporaryDirectory() as clean_tmp:
         from personal_agent import core, finance, decision
+        from unittest.mock import patch
         prev_h = os.environ.get('PERSONAL_AGENT_HOME')
         os.environ['PERSONAL_AGENT_HOME'] = clean_tmp
         reload(core); reload(finance); reload(decision); reload(quant)
         finance.import_xml(ROOT / 'tests' / 'fixtures' / 'two_accounts.xml')
         pol_sell = quant.evaluate_policy(proposed_trade={'symbol': 'SYNTH', 'action': 'SELL', 'amount_base': '999999', 'account': 'U0000001'})
         check('unified evaluate_policy oversell block', any(b['rule'] == 'insufficient_account_position' for b in pol_sell.get('hard_blocks', [])))
-        alloc_res = quant.allocate_incremental_capital('500', ['QQQ', 'SYNTH'])
+        alloc_stale = quant.allocate_incremental_capital('500', ['QQQ', 'SYNTH'])
+        check('allocator blocks stale ledger', alloc_stale.get('status') == 'blocked_stale_ledger')
+        fresh_snap = {**finance.portfolio(), 'status': 'ok', 'stale': False, 'advice_allowed': True, 'as_of': date.today().isoformat()}
+        with patch.object(quant, 'portfolio', return_value=fresh_snap):
+            alloc_res = quant.allocate_incremental_capital('500', ['QQQ', 'SYNTH'])
         synth_cand = next(c for c in alloc_res['candidates'] if c['candidate'] == 'SYNTH')
         check('multi-asset allocator capm prior', 'optimal_multi_asset_allocation' in alloc_res and synth_cand['expected_return_source'] == 'capm_erp_prior' and synth_cand['assumed_expected_return'] != 0.15)
         os.environ['PERSONAL_AGENT_HOME'] = prev_h
@@ -207,14 +212,19 @@ def knowledge_checks(home):
     opt_arb = quant.analyze_option_strategy('covered_call', '100', '90', 60, premium='2.0')
     check('options exact nd2 and arb bounds', opt_itm['greeks']['nd2_itm_prob'] != opt_itm['greeks']['delta'] and opt_arb['iv_solver_status'] == 'outside_no_arbitrage_bounds' and opt_arb['solved_iv_from_premium'] is None)
 
-    # 8. Durable workflow resume & WAL-safe SQLite backup
+    # 8. Durable workflow resume, immutable params, option attribution unit consistency, & WAL-safe SQLite backup
     from personal_agent import report
     wf_partial_id = 'wf_resume_test'
-    ops._save_run(wf_partial_id, 'morning_portfolio_review', 'running', 'freshness_and_reconciliation_gate', ['intake_validate', 'freshness_and_reconciliation_gate'], False, {'workflow': 'morning_portfolio_review'}, {'brief': report.daily_brief()}, None, False)
+    ops._save_run(wf_partial_id, 'morning_portfolio_review', 'running', 'freshness_and_reconciliation_gate', ['intake_validate', 'freshness_and_reconciliation_gate'], False, {'workflow': 'morning_portfolio_review', 'immutable_params': {}, 'input_hash': ops._param_hash({})}, {'brief': report.daily_brief()}, None, False)
+    resume_mismatch = False
+    try:
+        ops.run_workflow('morning_portfolio_review', {'extra': 'tampered'}, resume_run_id=wf_partial_id)
+    except ValueError:
+        resume_mismatch = True
     wf_resumed = ops.resume_workflow(wf_partial_id)
     wf_state = ops.get_workflow_run(wf_partial_id)
     bk_res = core.backup_databases(home / 'test_backup')
-    check('durable workflow resume and wal backup', wf_resumed['status'] == 'completed' and wf_state['retry_count'] == 1 and bk_res['status'] == 'ok' and len(bk_res['databases']) >= 3)
+    check('durable workflow resume and wal backup', resume_mismatch and wf_resumed['status'] == 'completed' and wf_state['retry_count'] == 1 and bk_res['status'] == 'ok' and len(bk_res['databases']) >= 3)
 
     ev = ops.run_eval_benchmark()
     check('evaluation harness 100pct', ev['passed'] == ev['total'] and ev['score_pct'] == 100.0, ev)

@@ -846,11 +846,11 @@ def counterfactual_attribution(days=90, account=None):
         sym=str(f.get('symbol') or cid).upper()
         cur=str(f.get('currency') or base_cur).upper()
         mult=dec(f.get('multiplier') or '1')
-        abs_qty=abs(dec(f.get('quantity') or '0'))*mult
+        abs_qty=abs(dec(f.get('quantity') or '0'))
         if abs_qty==0 or f.get('tradePrice') in (None,''): continue
         signed_qty=abs_qty if side=='BUY' else -abs_qty
         t_fx=Decimal('1') if cur==base_cur else dec(f.get('fxRateToBase') or fallback_fx)
-        exec_unit_base=dec(f['tradePrice'])*t_fx
+        exec_unit_base=dec(f['tradePrice'])*t_fx*mult
         comm_cur=str(f.get('ibCommissionCurrency') or cur).upper()
         comm_fx=Decimal('1') if comm_cur==base_cur else t_fx
         comm_base=abs(dec(f.get('ibCommission') or '0'))*comm_fx

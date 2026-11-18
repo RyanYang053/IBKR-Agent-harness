@@ -1,7 +1,7 @@
 """Stateful Workflow Engine, Human-in-the-Loop Approvals, Privacy-Safe Observability, and Evaluation Harness."""
 from datetime import datetime, timezone
 from decimal import Decimal
-import functools, json, os, tempfile, time, uuid
+import functools, hashlib, json, os, subprocess, sys, tempfile, time, uuid
 from pathlib import Path
 from .core import ROOT, bounded, db, now
 from . import decision, finance, knowledge, market, quant, report
@@ -160,30 +160,47 @@ def _save_run(run_id, workflow_id, status, current_step, completed_steps, pendin
             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)''',
             (run_id,workflow_id,status,current_step,json.dumps(completed_steps),1 if pending_approval else 0,retries,json.dumps(inputs_meta,ensure_ascii=False),json.dumps(checkpoint,ensure_ascii=False,default=str),json.dumps(proposed_action,ensure_ascii=False) if proposed_action else None,1 if acceptance_passed else 0,created,stamp))
 
+def _param_hash(obj):
+    return hashlib.sha256(json.dumps(obj or {}, sort_keys=True, default=str).encode('utf-8')).hexdigest()[:16]
+
+def _positions_hash():
+    snap=finance.portfolio()
+    pos=sorted((str(p.get('account','')),str(p.get('symbol','')),str(p.get('quantity','')),str(p.get('value_base',''))) for p in (snap.get('positions') or []))
+    return hashlib.sha256(json.dumps({'as_of':snap.get('as_of'),'nav':snap.get('nav'),'pos':pos}, sort_keys=True).encode('utf-8')).hexdigest()[:16]
+
 def run_workflow(workflow_id, params=None, resume_run_id=None):
-    """Execute a structured multi-stage investment workflow with step-by-step durable SQLite checkpoints and safe crash-resume."""
+    """Execute a structured multi-stage investment workflow with immutable input binding, step-by-step durable SQLite checkpoints, and safe crash-resume."""
     t0=time.perf_counter()
     if workflow_id not in WORKFLOW_SPECS: raise ValueError('unknown workflow_id')
-    p=params if isinstance(params, dict) else (json.loads(params) if isinstance(params, str) and params.strip() else {})
+    raw_p=params if isinstance(params, dict) else (json.loads(params) if isinstance(params, str) and params.strip() else None)
     if resume_run_id:
         prior=get_workflow_run(resume_run_id)
         if prior.get('status')=='not_found': raise ValueError('resume_run_id not found')
         if prior.get('workflow_id')!=workflow_id: raise ValueError('workflow_id mismatch on resume')
+        meta=dict(prior.get('inputs_meta') or {})
+        locked_p=meta.get('immutable_params')
+        if locked_p is None:
+            raise ValueError('workflow run lacks immutable_params; cannot safely resume')
+        if raw_p is not None and _param_hash(raw_p)!=meta.get('input_hash'):
+            raise ValueError('cannot resume workflow with modified parameters; start a new run')
+        p=dict(locked_p)
         run_id=resume_run_id
         done=list(prior['completed_steps'] or ['intake_validate'])
         ckpt=dict(prior['checkpoint'] or {})
         with db('ops') as c:
             c.execute('UPDATE workflow_runs SET retry_count=retry_count+1, updated_at=? WHERE run_id=?',(now(),run_id))
     else:
+        p=raw_p or {}
         run_id='wf_'+uuid.uuid4().hex[:12]
         done=['intake_validate']
         ckpt={}
-        _save_run(run_id, workflow_id, 'running', 'intake_validate', done, False, {'workflow':workflow_id}, ckpt, None, False)
+        meta={'workflow':workflow_id,'immutable_params':p,'input_hash':_param_hash(p)}
+        _save_run(run_id, workflow_id, 'running', 'intake_validate', done, False, meta, ckpt, None, False)
 
     def _ckpt(step_name, key=None, val=None):
         if key is not None: ckpt[key]=val
         if step_name not in done: done.append(step_name)
-        _save_run(run_id, workflow_id, 'running', step_name, done, False, {'workflow':workflow_id}, ckpt, None, False)
+        _save_run(run_id, workflow_id, 'running', step_name, done, False, meta, ckpt, None, False)
 
     if workflow_id=='morning_portfolio_review':
         if 'brief' not in ckpt:
@@ -273,6 +290,7 @@ def run_workflow(workflow_id, params=None, resume_run_id=None):
             'staged_portfolio_as_of':gate.get('portfolio_as_of'),
             'staged_portfolio_nav':gate.get('portfolio_nav'),
             'staged_policy_hash':gate.get('policy_hash'),
+            'staged_positions_hash':_positions_hash(),
             'orders':'disabled_manual_broker_execution_only'
         }
         status='awaiting_approval'; cur_step='awaiting_human_approval'
@@ -394,6 +412,7 @@ def run_workflow(workflow_id, params=None, resume_run_id=None):
             'staged_portfolio_as_of':s4_gate.get('portfolio_as_of'),
             'staged_portfolio_nav':s4_gate.get('portfolio_nav'),
             'staged_policy_hash':s4_gate.get('policy_hash'),
+            'staged_positions_hash':_positions_hash(),
             'orders':'disabled_manual_broker_execution_only'
         }
         acc_ok=g_verd in {'clear','caution_review_flags'}
@@ -436,11 +455,10 @@ def list_workflow_runs(status=None, limit=20):
     return out
 
 def approve_workflow(run_id, operator_note=''):
-    """Human-in-the-Loop Resume-After-Approval: enforces TTL, idempotency, data-version binding, and live gate re-validation before committing."""
+    """Human-in-the-Loop Resume-After-Approval: atomic state claim, TTL, idempotency, positions/policy binding, and live gate re-validation."""
     state=get_workflow_run(run_id)
     if state.get('status')=='not_found': raise ValueError('workflow run not found')
     checkpoint=dict(state['checkpoint'])
-    # Idempotent return if already approved
     if state['status']=='completed' and (checkpoint.get('approval_resolution') or {}).get('decision')=='approved':
         res=checkpoint['approval_resolution']
         return {'run_id':run_id,'status':'completed','idempotent':True,'committed_memory_id':res.get('memory_id'),'orders':'disabled'}
@@ -469,6 +487,9 @@ def approve_workflow(run_id, operator_note=''):
         staged_pol=prop.get('staged_policy_hash')
         if staged_pol and re_gate.get('policy_hash') and staged_pol!=re_gate.get('policy_hash'):
             raise ValueError('investment policy changed since workflow staging; re-run workflow before approving')
+        staged_pos=prop.get('staged_positions_hash')
+        if staged_pos and staged_pos!=_positions_hash():
+            raise ValueError('portfolio positions or NAV changed since workflow staging; re-run workflow before approving')
         staged_nav=prop.get('staged_portfolio_nav')
         cur_nav=re_gate.get('portfolio_nav')
         if staged_nav and cur_nav:
@@ -478,16 +499,33 @@ def approve_workflow(run_id, operator_note=''):
             except ValueError as ve:
                 if 'shifted >5%' in str(ve): raise
 
+    # Atomic SQLite state claim to prevent concurrent double-approval
+    with db('ops') as c:
+        schema(c)
+        cur=c.execute("UPDATE workflow_runs SET status='approving', updated_at=? WHERE run_id=? AND status='awaiting_approval'",(now(), str(run_id)))
+        if cur.rowcount==0:
+            latest=get_workflow_run(run_id)
+            l_ckpt=latest.get('checkpoint') or {}
+            if latest.get('status')=='completed' and (l_ckpt.get('approval_resolution') or {}).get('decision')=='approved':
+                res=l_ckpt['approval_resolution']
+                return {'run_id':run_id,'status':'completed','idempotent':True,'committed_memory_id':res.get('memory_id'),'orders':'disabled'}
+            raise ValueError('workflow run already claimed or no longer awaiting approval')
+
     memory_id=None
-    if prop['kind']=='save_journal':
-        memory_id=knowledge.save_journal(prop['symbol'], prop['thesis'], 'workflow_human_approved', alternatives=operator_note, risk=prop.get('falsifier') or '', confidence=prop.get('confidence') or '')
-    elif prop['kind']=='approved_trade_plan':
-        plan_thesis=f"[{prop['action']} {prop['amount_base']} base in {prop['account']} | gate={prop['gate_verdict']}] {prop['thesis']}"
-        if operator_note: plan_thesis+=' | Note: '+operator_note
-        memory_id=knowledge.save_journal(prop['symbol'], plan_thesis, 'workflow_human_approved', risk=prop.get('falsifier') or '', confidence=prop.get('confidence') or '')
-    elif prop['kind']=='save_lesson':
-        detail=prop['detail']+(' | Operator note: '+operator_note if operator_note else '')
-        memory_id=knowledge.save_lesson(prop['lesson_kind'], prop['title'], detail, 'workflow_human_approved', symbol=prop.get('symbol') or '', action_rule=prop.get('action_rule') or '')
+    try:
+        if prop['kind']=='save_journal':
+            memory_id=knowledge.save_journal(prop['symbol'], prop['thesis'], 'workflow_human_approved', alternatives=operator_note, risk=prop.get('falsifier') or '', confidence=prop.get('confidence') or '')
+        elif prop['kind']=='approved_trade_plan':
+            plan_thesis=f"[{prop['action']} {prop['amount_base']} base in {prop['account']} | gate={prop['gate_verdict']}] {prop['thesis']}"
+            if operator_note: plan_thesis+=' | Note: '+operator_note
+            memory_id=knowledge.save_journal(prop['symbol'], plan_thesis, 'workflow_human_approved', risk=prop.get('falsifier') or '', confidence=prop.get('confidence') or '')
+        elif prop['kind']=='save_lesson':
+            detail=prop['detail']+(' | Operator note: '+operator_note if operator_note else '')
+            memory_id=knowledge.save_lesson(prop['lesson_kind'], prop['title'], detail, 'workflow_human_approved', symbol=prop.get('symbol') or '', action_rule=prop.get('action_rule') or '')
+    except Exception:
+        with db('ops') as c:
+            c.execute("UPDATE workflow_runs SET status='awaiting_approval', updated_at=? WHERE run_id=? AND status='approving'",(now(), str(run_id)))
+        raise
     done=list(state['completed_steps'])+['human_approved','committed_to_memory']
     checkpoint['approval_resolution']={'decision':'approved','memory_id':memory_id,'operator_note':operator_note,'resolved_at':now(),'orders':'disabled'}
     _save_run(run_id, state['workflow_id'], 'completed', 'committed_to_memory', done, False, state['inputs_meta'], checkpoint, prop, True)
