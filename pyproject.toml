@@ -26,6 +26,11 @@ dependencies = [
   "yfinance>=0.2.50,<1",
 ]
 
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<9",
+]
+
 [project.scripts]
 ibkr-agent = "personal_agent.cli:main"
 

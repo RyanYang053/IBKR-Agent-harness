@@ -61,8 +61,9 @@ def day(x):
     x=str(x).split(';',1)[0].split(' ',1)[0]
     return datetime.strptime(x,'%Y%m%d' if len(x)==8 else '%Y-%m-%d').date().isoformat()
 def _stale(as_of,cfg):
-    """Stale when the statement is older than the last completed business day, or past the configured calendar limit."""
+    """Stale when the statement is in the future, older than the last completed business day, or past the configured calendar limit."""
     reported=date.fromisoformat(as_of)
+    if reported>date.today(): return True
     if (date.today()-reported).days>int(cfg.get('max_snapshot_age_days',4)): return True
     expected=date.today()-timedelta(days=1)
     while expected.weekday()>=5: expected-=timedelta(days=1)
@@ -113,7 +114,11 @@ def import_xml(path):
             if not nav_rows: raise ValueError('missing required NAV in base section')
             if not any(r[1]==d for r in nav_rows): raise ValueError('missing NAV for statement end date')
             if len({r[1] for r in nav_rows})!=len(nav_rows): raise ValueError('duplicate NAV dates')
-            for r in nav_rows: c.execute('INSERT OR REPLACE INTO nav VALUES(?,?,?,?,?,?)',r)
+            for r in nav_rows:
+                ex_nav=c.execute('SELECT sr.generated FROM nav n LEFT JOIN sources sr ON n.source=sr.hash WHERE n.account=? AND n.date=?',(r[0],r[1])).fetchone()
+                if ex_nav and ex_nav['generated'] and stmt_gen and ex_nav['generated']>stmt_gen:
+                    continue
+                c.execute('INSERT OR REPLACE INTO nav VALUES(?,?,?,?,?,?)',r)
             container=s.find('OpenPositions'); pos=[]; seen=set()
             if container is not None:
                 for n in container.findall('OpenPosition'):
@@ -159,6 +164,7 @@ def load_full_portfolio_snapshot():
     acct_cons_cfg=cfg.get('account_constraints') or {}
     with db('finance') as c:
         schema(c)
+        c.execute('BEGIN')
         latest={a:c.execute('SELECT * FROM nav WHERE account=? ORDER BY date DESC LIMIT 1',(a,)).fetchone() for a in sorted(aliases)}
         if any(r is None for r in latest.values()):
             return PortfolioSnapshot(snapshot_id='missing_accounts',as_of=None,status='missing_accounts',stale=True,advice_allowed=False,positions_complete=False,currency=base_cur,nav=Decimal(0),cash=Decimal(0))
@@ -193,9 +199,13 @@ def load_full_portfolio_snapshot():
                     ))
     sid_payload={'schema':'v0.3.3','as_of':d,'currency':base_cur,'accts':[(a.account,a.tax_bucket,str(a.nav.normalize()),str(a.cash.normalize()) if a.cash is not None else None,a.allow_margin) for a in accts],'pos':sorted((p.account,p.conid,p.symbol,p.asset,str(p.quantity.normalize()),str(p.multiplier.normalize()),str(p.market_value_base.normalize()),str(p.fx_rate_to_base.normalize()) if p.fx_rate_to_base is not None else None) for p in pos_recs)}
     sid=hashlib.sha256(json.dumps(sid_payload, sort_keys=True).encode('utf-8')).hexdigest()[:16]
+    is_future=date.fromisoformat(d)>date.today()
+    missing_cash=any(a.cash is None for a in accts)
+    advice_ok=complete and not stale and not is_future and not missing_cash
+    st='future_statement' if is_future else ('missing_cash' if missing_cash else ('ok' if advice_ok else 'partial_or_stale'))
     return PortfolioSnapshot(
-        snapshot_id=sid, as_of=d, status='ok' if complete and not stale else 'partial_or_stale',
-        stale=stale, advice_allowed=complete and not stale, positions_complete=complete,
+        snapshot_id=sid, as_of=d, status=st,
+        stale=stale, advice_allowed=advice_ok, positions_complete=complete,
         currency=base_cur, nav=tot_nav, cash=tot_cash, accounts=tuple(accts), positions=tuple(pos_recs),
         limitations=('Reconciled Flex daily statement; not live broker state.',)
     )
@@ -348,15 +358,16 @@ def _xnpv(rate,flows):
         total+=amount/((Decimal(1)+rate)**years)
     return total
 def xirr(cash_flows):
-    """Investor XIRR with dynamic bracketing and multiple-root detection. Returns None if no sign change or ambiguous roots."""
+    """Investor XIRR with fine-grid bracketing and multiple-root detection. Returns None if same-day, no sign change, or multiple roots."""
     if len(cash_flows)<2 or not any(a<0 for _,a in cash_flows) or not any(a>0 for _,a in cash_flows): return None
     ordered=sorted(cash_flows,key=lambda item:item[0])
-    grid=[Decimal(str(x)) for x in (-0.99,-0.9,-0.5,-0.2,0.0,0.2,0.5,1.0,2.5,5.0,10.0,50.0,100.0)]
+    if len({d for d,_ in ordered})<2: return None
+    grid=[Decimal('-0.99')]+[Decimal(str(round(-0.95+0.05*i, 4))) for i in range(60)]+[Decimal(str(x)) for x in (2.5,5.0,10.0,50.0,100.0)]
     vals=[_xnpv(g,ordered) for g in grid]
-    for g,v in zip(grid,vals):
-        if v==0: return g
+    exact_roots=[g for g,v in zip(grid,vals) if v==0]
     brackets=[(grid[i],grid[i+1],vals[i],vals[i+1]) for i in range(len(grid)-1) if vals[i]*vals[i+1]<0]
-    if len(brackets)!=1: return None
+    if len(exact_roots)==1 and not brackets: return exact_roots[0]
+    if exact_roots or len(brackets)!=1: return None
     low,high,lo,hi=brackets[0]
     for _ in range(80):
         mid=(low+high)/2

@@ -140,7 +140,21 @@ def reconcile_live_to_flex():
         return {'status':'flex_unavailable','flex_status':flex_snap.status,'broker_snapshot_id':brk['snapshot_id'],'orders':'disabled'}
     acct_map=config().get('finance',{}).get('accounts') or {}
     brk_accts=brk['accounts']
-    brk_nav=sum((dec(v.get('NetLiquidation') or 0) for v in brk_accts.values()), Decimal(0))
+    brk_nav=Decimal(0); acct_diffs=[]
+    flex_by_acct={a.account:a.nav for a in flex_snap.accounts}
+    for aid, v in brk_accts.items():
+        alias=acct_map.get(aid, aid)
+        a_cur=str(v.get('currency') or flex_snap.currency).upper()
+        if a_cur==flex_snap.currency:
+            fx=Decimal('1')
+        elif v.get('fx_rate_to_base') not in (None,'') and dec(v.get('fx_rate_to_base'))>0:
+            fx=dec(v['fx_rate_to_base'])
+        else:
+            return {'status':'missing_fx_rate','account':alias,'currency':a_cur,'flex_status':flex_snap.status,'broker_snapshot_id':brk['snapshot_id'],'orders':'disabled'}
+        a_nav=dec(v.get('NetLiquidation') or 0)*fx
+        brk_nav+=a_nav
+        if alias in flex_by_acct and abs(a_nav-flex_by_acct[alias])>=Decimal('0.01'):
+            acct_diffs.append({'account':alias,'flex_nav_base':str(flex_by_acct[alias]),'broker_nav_base':str(a_nav),'nav_delta_base':str(a_nav-flex_by_acct[alias])})
     nav_diff=brk_nav-flex_snap.nav
 
     flex_by_key={(p.account, p.conid):p.quantity for p in flex_snap.positions}
@@ -156,7 +170,7 @@ def reconcile_live_to_flex():
         if fq!=bq:
             diffs.append({'account':k[0],'conid':k[1],'flex_qty':str(fq),'broker_qty':str(bq),'qty_delta':str(bq-fq)})
     return {
-        'status':'reconciled' if not diffs and abs(nav_diff)<Decimal('1.0') else 'timing_or_position_differences',
+        'status':'reconciled' if not diffs and not acct_diffs and abs(nav_diff)<Decimal('1.0') else 'timing_or_position_differences',
         'flex_as_of':flex_snap.as_of,
         'flex_snapshot_id':flex_snap.snapshot_id,
         'flex_nav_base':str(flex_snap.nav),
@@ -164,6 +178,7 @@ def reconcile_live_to_flex():
         'broker_snapshot_id':brk['snapshot_id'],
         'broker_nav_base':str(brk_nav),
         'nav_delta_base':str(nav_diff),
+        'account_nav_differences':acct_diffs,
         'position_differences':diffs,
         'entitlements':brk['entitlements'],
         'limitations':['Differences between intraday broker state and prior Flex close may reflect new trades, FX, settlement, or corporate actions; Flex history is never overwritten.'],
@@ -176,7 +191,7 @@ class IBKRTWSAdapter(BrokerReadOnlyAdapter):
     def __init__(self, host='127.0.0.1', port=7497, client_id=19, timeout_sec=5.0):
         self.host=str(host); self.port=int(port); self.client_id=int(client_id); self.timeout_sec=float(timeout_sec)
         self._client=None; self._connected=False; self._req_seq=9000
-        self._accounts=[]; self._summary={}; self._positions=[]; self._contracts={}; self._quotes={}; self._chains={}; self._greeks={}
+        self._accounts=[]; self._summary={}; self._positions=[]; self._contracts={}; self._quotes={}; self._chains={}; self._greeks={}; self._greeks_by_req={}
         self._events={}; self._incomplete_callbacks=[]
 
     def _next_req_id(self):
@@ -230,7 +245,8 @@ class IBKRTWSAdapter(BrokerReadOnlyAdapter):
                 elif tickType==4: q['last']=price
                 elif tickType==9: q['close']=price
             def tickOptionComputation(self, reqId, tickType, tickAttrib, impliedVol, delta, optPrice, pvDividend, gamma, vega, theta, undPrice):
-                parent._greeks[str(reqId)]={'delta':delta,'gamma':gamma,'vega':vega,'theta':theta,'underlying_price':undPrice,'implied_vol':impliedVol,'status':'live' if delta is not None else 'unavailable'}
+                valid_d=(delta is not None and abs(float(delta))<=1.0001)
+                parent._greeks_by_req[str(reqId)]={'delta':delta if valid_d else None,'gamma':gamma,'vega':vega,'theta':theta,'underlying_price':undPrice if (undPrice is not None and float(undPrice)>0 and float(undPrice)<1e12) else None,'implied_vol':impliedVol,'status':'live' if valid_d else 'unavailable'}
             def tickSnapshotEnd(self, reqId):
                 ev=parent._events.get(('mkt', reqId))
                 if ev: ev.set()
@@ -312,8 +328,16 @@ class IBKRTWSAdapter(BrokerReadOnlyAdapter):
             if not ev.wait(self.timeout_sec): self._incomplete_callbacks.append(f'quote_timeout_{cid}')
             try: self._client.cancelMktData(req_id)
             except Exception: pass
-            if str(req_id) in self._quotes: out[str(cid)]=dict(self._quotes[str(req_id)])
-            if str(req_id) in self._greeks: self._greeks[str(cid)]=dict(self._greeks[str(req_id)])
+            if str(req_id) in self._quotes:
+                q_d=dict(self._quotes[str(req_id)])
+                bid=q_d.get('bid'); ask=q_d.get('ask')
+                if (bid is not None and bid<=0) or (ask is not None and ask<=0) or (bid is not None and ask is not None and bid>ask):
+                    q_d['status']='invalid_or_crossed'
+                else:
+                    q_d['status']='live'
+                out[str(cid)]=q_d
+            if str(req_id) in self._greeks_by_req:
+                self._greeks[str(cid)]=dict(self._greeks_by_req[str(req_id)])
         return out
 
     def option_chain(self, symbol, underlying_conid=0):

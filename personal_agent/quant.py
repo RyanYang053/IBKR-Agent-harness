@@ -171,11 +171,15 @@ def evaluate_policy(portfolio_snapshot=None, proposed_trade=None, market_snapsho
     for rec in csnap.positions:
         if account and rec.account and rec.account!=account: continue
         sym=rec.symbol; val=float(rec.market_value_base); asset=rec.asset
-        if abs(val)<1e-6: continue
+        if abs(val)<1e-6 and asset!='OPT': continue
         w=val/nav
         if asset=='OPT':
             opt_wt+=abs(w)
-            if rec.delta is not None and rec.underlying_price is not None and rec.quantity!=0 and rec.fx_rate_to_base is not None:
+            d_ok=(rec.delta is not None and rec.delta.is_finite() and abs(float(rec.delta))<=1.0001)
+            fx_ok=(rec.fx_rate_to_base is not None and rec.fx_rate_to_base.is_finite() and float(rec.fx_rate_to_base)>0)
+            upx_ok=(rec.underlying_price is not None and rec.underlying_price.is_finite() and float(rec.underlying_price)>0)
+            if d_ok and fx_ok and upx_ok:
+                if rec.quantity==0: continue
                 ew=(float(rec.quantity)*float(rec.multiplier)*float(rec.underlying_price)*float(rec.fx_rate_to_base)*float(rec.delta))/nav
                 opt_econ_wt+=ew
                 net_econ_eq+=ew
@@ -184,7 +188,7 @@ def evaluate_policy(portfolio_snapshot=None, proposed_trade=None, market_snapsho
                 pos_econ.append({'symbol':sym,'account':rec.account,'asset':'OPT','nominal_weight':round(w,4),'quantity':float(rec.quantity),'delta':float(rec.delta),'fx_rate_to_base':float(rec.fx_rate_to_base),'economic_weight':round(ew,4),'bucket':'tactical_option'})
             else:
                 opt_unknown=True
-                hard_blocks.append({'rule':'option_delta_notional_unavailable','symbol':sym,'detail':'Option position lacks contract quantity, underlying_price, fx_rate_to_base, or delta; refusing silent premium-based exposure.'})
+                hard_blocks.append({'rule':'option_delta_notional_unavailable','severity':'HARD','symbol':sym,'detail':'Option position lacks valid finite quantity, underlying_price, fx_rate_to_base, or delta in [-1,1].'})
                 pos_econ.append({'symbol':sym,'account':rec.account,'asset':'OPT','nominal_weight':round(w,4),'economic_weight':None,'bucket':'tactical_option'})
             continue
         mult=lev_map.get(sym, 1.0)
@@ -350,8 +354,10 @@ def driver_based_valuation(revenue_t0, rev_cagr_base, op_margin_target, tax_rate
     else:
         disc=float(wacc)
     debt=float(net_debt); sh0=float(shares); n_yr=int(years)
-    if rev0<=0 or sh0<=0 or disc<=g_term or n_yr<1 or n_yr>15:
-        raise ValueError('positive revenue_t0/shares, 1<=years<=15, and wacc > terminal_growth required')
+    for num in (rev0, g_base, m_base, tax, capx, da, nwc, g_term, sbc, dil, disc, debt, sh0):
+        if math.isnan(num) or math.isinf(num): raise ValueError('all valuation inputs must be finite')
+    if rev0<=0 or sh0<=0 or disc<=g_term or n_yr<1 or n_yr>15 or tax<0 or tax>=1:
+        raise ValueError('positive revenue_t0/shares, 0<=tax<1, 1<=years<=15, and wacc > terminal_growth required')
     p_bear=max(0.0, float(bear_prob)); p_base=max(0.0, float(base_prob)); p_bull=max(0.0, float(bull_prob))
     p_sum=p_bear+p_base+p_bull
     if p_sum<=0: raise ValueError('scenario probabilities must sum to positive value')
@@ -564,11 +570,28 @@ def simulate_allocation(portfolio_snapshot, cash_contribution=0.0, proposed_trad
     for tr in (proposed_trades or []):
         sym=str(tr.get('symbol') or '').strip().upper()
         cid=str(tr.get('conid') or '').strip()
-        act=str(tr.get('action') or tr.get('side') or 'BUY').strip().upper()
-        amt=abs(dec(tr.get('amount_base') or 0))
-        fee=abs(dec(tr.get('estimated_fees_base') or 0))
+        act=str(tr.get('action') or tr.get('side') or '').strip().upper()
+        if act not in {'BUY','ADD','SELL','TRIM','COVER'}:
+            raise ValueError(f'invalid_trade_side:{act}')
+        amt=dec(tr.get('amount_base') or 0)
+        if amt<=0: raise ValueError(f'invalid_amount_base:{amt}')
+        fee_raw=tr.get('estimated_fees_base')
+        fee=dec(fee_raw if fee_raw not in (None,'') else 0)
+        if fee<0: raise ValueError(f'negative_fee_rejected:{fee}')
         acct_t=str(tr.get('account') or tr.get('account_id') or '').strip()
-        if not sym or amt<=0: continue
+        t_asset=str(tr.get('asset') or 'STK').upper()
+        mult_v=dec(tr.get('multiplier') or (100 if t_asset=='OPT' else 1))
+        fx_v=dec(tr['fx_rate_to_base']) if tr.get('fx_rate_to_base') is not None else Decimal(1)
+        if fx_v<=0 or mult_v<=0: raise ValueError('positive multiplier and fx_rate_to_base required')
+        px_u=dec(tr['price_per_unit']) if tr.get('price_per_unit') not in (None,'') else None
+        if px_u is not None and px_u<=0: raise ValueError(f'nonpositive_price_per_unit:{px_u}')
+        tr_qty=dec(tr['quantity']) if tr.get('quantity') not in (None,'') else None
+        if tr_qty is not None and tr_qty<=0: raise ValueError(f'nonpositive_quantity:{tr_qty}')
+        if tr_qty is not None and px_u is not None:
+            implied_amt=tr_qty*px_u*mult_v*fx_v
+            if abs(implied_amt-amt)>max(Decimal('0.05'), amt*Decimal('0.01')):
+                raise ValueError(f'inconsistent_quantity_price_amount: {tr_qty}*{px_u}*{mult_v}*{fx_v}={implied_amt} != {amt}')
+        if not sym: raise ValueError('symbol_required')
         delta_v=amt if act in {'BUY','ADD','COVER'} else -amt
         if acct_t:
             a_idx=next((i for i,a in enumerate(accts) if a.account==acct_t), None)
@@ -605,14 +628,12 @@ def simulate_allocation(portfolio_snapshot, cash_contribution=0.0, proposed_trad
                 new_qty=p0.quantity*(new_mv/p0.market_value_base)
             else:
                 new_qty=p0.quantity
+            if act=='COVER' and p0.quantity<0 and new_qty>Decimal('0.000001'):
+                raise ValueError(f'cover_exceeds_short_position:{sym} in {acct_t}')
             pos_list[p_idx]=PositionRecord(account=p0.account, conid=p0.conid, symbol=p0.symbol, asset=p0.asset, currency=p0.currency, quantity=new_qty, multiplier=p0.multiplier, market_value_base=max(Decimal(0), new_mv) if p0.market_value_base>=0 else new_mv, underlying_price=p0.underlying_price, underlying_currency=p0.underlying_currency, fx_rate_to_base=p0.fx_rate_to_base, delta=p0.delta, source=p0.source)
         else:
             if delta_v<0: raise ValueError(f'insufficient_account_position:unheld {sym} in {acct_t}')
-            t_asset=str(tr.get('asset') or 'STK').upper()
-            mult_v=dec(tr.get('multiplier') or (100 if t_asset=='OPT' else 1))
-            fx_v=dec(tr['fx_rate_to_base']) if tr.get('fx_rate_to_base') is not None else Decimal(1)
-            px_u=dec(tr['price_per_unit']) if tr.get('price_per_unit') not in (None,'') else None
-            est_qty=tr_qty if tr_qty is not None else ((amt/(px_u*mult_v*fx_v)) if (px_u and px_u>0 and mult_v>0 and fx_v>0) else Decimal(0))
+            est_qty=tr_qty if tr_qty is not None else ((amt/(px_u*mult_v*fx_v)) if (px_u and px_u>0) else Decimal(0))
             pos_list.append(PositionRecord(
                 account=acct_t, conid=cid or sym, symbol=sym, asset=t_asset,
                 currency=csnap.currency, quantity=est_qty,
@@ -634,7 +655,7 @@ def simulate_allocation(portfolio_snapshot, cash_contribution=0.0, proposed_trad
         accounts=tuple(accts), positions=tuple(pos_list), limitations=csnap.limitations
     )
 
-def allocate_incremental_capital(amount_base, candidates=None, expected_returns=None, account_constraints=None, contribution_account=None):
+def allocate_incremental_capital(amount_base, candidates=None, expected_returns=None, account_constraints=None, contribution_account=None, use_existing_cash=False):
     """Full-Portfolio Covariance-aware Multi-Asset Robust Optimizer over canonical PortfolioSnapshot with post-trade IPS plan gate."""
     add_amt=float(dec(amount_base))
     if add_amt<=0: raise ValueError('amount_base must be positive')
@@ -645,7 +666,7 @@ def allocate_incremental_capital(amount_base, candidates=None, expected_returns=
         return {'status':'blocked','reason':csnap.status}
     if not csnap.advice_allowed:
         return {'status':'blocked_stale_ledger','reason':'Ledger snapshot is stale or incomplete; sync Flex before optimizing allocation.'}
-    nav=float(csnap.nav); new_nav=nav+add_amt
+    nav=float(csnap.nav); new_nav=nav if use_existing_cash else (nav+add_amt)
     pos_vals_by_sym={}
     for p in csnap.positions:
         pos_vals_by_sym[p.symbol]=pos_vals_by_sym.get(p.symbol, 0.0)+float(p.market_value_base)
@@ -763,7 +784,8 @@ def allocate_incremental_capital(amount_base, candidates=None, expected_returns=
     w_opt_post_all[:m_cand]+=(x*add_share)
     port_vol_post=float(math.sqrt(max(0.0, float(w_opt_post_all.T@cov_all@w_opt_post_all)))) if m_all>0 else 0.0
     port_ret_post=float(np.dot(w_opt_post_all, np.array([mus[s] for s in all_syms])))+(max(0.0, (cash_cur+hold_cash_amt)/new_nav))*rf
-    post_snapshot=simulate_allocation(csnap, cash_contribution=add_amt, proposed_trades=[{'symbol':a['symbol'],'action':'BUY','amount_base':str(a['amount_base']),'account':contribution_account or ''} for a in opt_alloc], contribution_account=contribution_account, investment_policy=pol, require_explicit_account=False)
+    contrib_amt=0.0 if use_existing_cash else add_amt
+    post_snapshot=simulate_allocation(csnap, cash_contribution=contrib_amt, proposed_trades=[{'symbol':a['symbol'],'action':'BUY','amount_base':str(a['amount_base']),'account':contribution_account or ''} for a in opt_alloc], contribution_account=contribution_account, investment_policy=pol, require_explicit_account=False)
     pol_check=evaluate_policy(portfolio_snapshot=post_snapshot, investment_policy=pol, mode='PROPOSED_PLAN')
     overall_status='blocked_policy_violation' if pol_check.get('hard_blocks') else 'ok'
 

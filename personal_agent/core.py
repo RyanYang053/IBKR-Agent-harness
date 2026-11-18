@@ -27,6 +27,8 @@ def private_dir(path):
 @contextmanager
 def db(domain):
     if domain not in {'knowledge','finance','market','ops'}: raise ValueError('invalid domain')
+    if os.environ.get('INVESTMENT_OS_PUBLIC_ONLY')=='1' and domain in {'finance','knowledge','ops'}:
+        raise PermissionError(f'public-only process is forbidden from opening {domain}.sqlite3')
     p=private_dir(HOME)/f'{domain}.sqlite3'
     c=sqlite3.connect(p, timeout=15)
     c.row_factory=sqlite3.Row
