@@ -34,7 +34,8 @@ def schema(c):
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         lease_owner TEXT,
-        lease_expires_at TEXT
+        lease_expires_at TEXT,
+        payload_hash TEXT NOT NULL DEFAULT ''
     );
     CREATE TABLE IF NOT EXISTS telemetry_spans(
         span_id TEXT PRIMARY KEY,
@@ -80,7 +81,7 @@ def schema(c):
         cname=col_def.split()[0]
         if cname not in wf_cols: c.execute(f'ALTER TABLE workflow_runs ADD COLUMN {col_def}')
     ai_cols={r[1] for r in c.execute('PRAGMA table_info(approval_intents)')}
-    for col_def in ('lease_owner TEXT', 'lease_expires_at TEXT'):
+    for col_def in ('lease_owner TEXT', 'lease_expires_at TEXT', "payload_hash TEXT NOT NULL DEFAULT ''"):
         cname=col_def.split()[0]
         if cname not in ai_cols: c.execute(f'ALTER TABLE approval_intents ADD COLUMN {col_def}')
 
@@ -219,7 +220,7 @@ def _param_hash(obj):
     return hashlib.sha256(json.dumps(obj or {}, sort_keys=True, default=str).encode('utf-8')).hexdigest()[:16]
 
 def _positions_hash():
-    return finance.load_full_portfolio_snapshot().snapshot_id
+    return finance.decision_snapshot().snapshot_id
 
 def run_workflow(workflow_id, params=None, resume_run_id=None):
     """Execute a structured multi-stage investment workflow with immutable input binding, step-by-step durable SQLite checkpoints, and safe crash-resume."""
@@ -469,7 +470,22 @@ def run_workflow(workflow_id, params=None, resume_run_id=None):
             'staged_positions_hash':_positions_hash(),
             'orders':'disabled_manual_broker_execution_only'
         }
-        acc_ok=g_verd in {'clear','caution_review_flags'}
+        s1_r=ckpt.get('1_research_case') or {}
+        s3_v=ckpt.get('3_valuation_scenarios')
+        s6_a=ckpt.get('6_and_7_alternatives_and_allocation') or {}
+        has_research=(
+            (s1_r.get('living_thesis') or {}).get('status')=='active'
+            or bool((s1_r.get('filing_forensics') or {}).get('forensic_metrics'))
+            or bool(market.get_evidence(sym))
+            or bool((s1_r.get('stock_brief') or {}).get('edgar_fundamentals'))
+        )
+        acc_ok=(
+            (g_verd in {'clear','caution_review_flags'})
+            and (s3_v is not None)
+            and (s6_a.get('status')=='ok')
+            and bool(str(p.get('falsifier') or '').strip())
+            and has_research
+        )
         _save_run(run_id, workflow_id, 'awaiting_approval', '8_awaiting_human_committee_approval', done, True, {'symbol':sym,'action':act,'amount_base':amt,'staged_nav':s4_gate.get('portfolio_nav'),'staged_policy_hash':s4_gate.get('policy_hash')}, ckpt, proposed, acc_ok)
         record_span('workflow', workflow_id, 'ok', (time.perf_counter()-t0)*1000.0, len(json.dumps(ckpt))//4)
         return {'run_id':run_id,'workflow_id':workflow_id,'status':'awaiting_approval','current_step':'8_awaiting_human_committee_approval','completed_steps':done,'pending_approval':True,'proposed_approval':proposed,'result':ckpt}
@@ -513,7 +529,7 @@ def approve_workflow(run_id, operator_note=''):
     state=get_workflow_run(run_id)
     if state.get('status')=='not_found': raise ValueError('workflow run not found')
     checkpoint=dict(state['checkpoint'])
-    rec_mid=None; rec_note=''; need_repair=False; recovering_null_intent=False
+    rec_mid=None; rec_note=''; need_repair=False; recovering_null_intent=False; lease_id=None
     with db('ops') as c:
         schema(c)
         intent=c.execute('SELECT * FROM approval_intents WHERE run_id=?',(str(run_id),)).fetchone()
@@ -534,10 +550,12 @@ def approve_workflow(run_id, operator_note=''):
                     rec_mid=k_existing['id']; rec_note=intent['operator_note']; need_repair=True
                     c.execute("UPDATE approval_intents SET memory_id=?, decision='approved', updated_at=? WHERE run_id=?",(rec_mid, now(), str(run_id)))
                 else:
+                    p_hash_chk=_param_hash({'prop':state['proposed_action'],'note':operator_note})
+                    if intent['payload_hash'] and intent['payload_hash']!=p_hash_chk:
+                        raise ValueError('immutable_approval_payload_mismatch')
                     lease_id=f'lease_{uuid.uuid4().hex[:8]}'
                     t_now=datetime.now(timezone.utc)
-                    exp_ts=(t_now.timestamp()+120.0)
-                    exp_iso=datetime.fromtimestamp(exp_ts, tz=timezone.utc).isoformat()
+                    exp_iso=datetime.fromtimestamp(t_now.timestamp()+120.0, tz=timezone.utc).isoformat()
                     cur_l=c.execute("UPDATE approval_intents SET lease_owner=?, lease_expires_at=?, updated_at=? WHERE run_id=? AND decision='approving' AND memory_id IS NULL AND (lease_owner IS NULL OR lease_expires_at<?)",(lease_id, exp_iso, t_now.isoformat(), str(run_id), t_now.isoformat()))
                     if cur_l.rowcount==0:
                         raise ValueError('approval recovery already in progress by active lease owner')
@@ -589,9 +607,17 @@ def approve_workflow(run_id, operator_note=''):
             except ValueError as ve:
                 if 'shifted >5%' in str(ve): raise
 
-    # Atomic CAS intent claim via approval_intents + workflow_runs (or resume approving-NULL-memory recovery)
-    stamp=now()
-    if not recovering_null_intent:
+    # Atomic CAS intent claim with initial ownership lease and immutable payload_hash
+    t_now=datetime.now(timezone.utc); stamp=t_now.isoformat()
+    p_hash=_param_hash({'prop':prop,'note':operator_note})
+    if recovering_null_intent:
+        with db('ops') as c:
+            row_h=c.execute('SELECT payload_hash FROM approval_intents WHERE run_id=?',(str(run_id),)).fetchone()
+            if row_h and row_h['payload_hash'] and row_h['payload_hash']!=p_hash:
+                raise ValueError('immutable_approval_payload_mismatch')
+    else:
+        lease_id=f'lease_{uuid.uuid4().hex[:8]}'
+        exp_iso=datetime.fromtimestamp(t_now.timestamp()+120.0, tz=timezone.utc).isoformat()
         with db('ops') as c:
             schema(c)
             cur=c.execute("UPDATE workflow_runs SET status='approving', updated_at=? WHERE run_id=? AND status='awaiting_approval'",(stamp, str(run_id)))
@@ -600,7 +626,13 @@ def approve_workflow(run_id, operator_note=''):
                 if intent and intent['decision']=='approved':
                     return {'run_id':run_id,'status':'completed','idempotent':True,'committed_memory_id':intent['memory_id'],'orders':'disabled'}
                 raise ValueError('workflow run already claimed or no longer awaiting approval')
-            c.execute("INSERT OR IGNORE INTO approval_intents(run_id,decision,operator_note,memory_id,created_at,updated_at) VALUES(?,?,?,?,?,?)",(str(run_id),'approving',operator_note,None,stamp,stamp))
+            c.execute("INSERT OR IGNORE INTO approval_intents(run_id,decision,operator_note,memory_id,created_at,updated_at,lease_owner,lease_expires_at,payload_hash) VALUES(?,?,?,?,?,?,?,?,?)",(str(run_id),'approving',operator_note,None,stamp,stamp,lease_id,exp_iso,p_hash))
+
+    # Fencing check BEFORE any journal side effect
+    with db('ops') as c:
+        chk=c.execute("SELECT lease_owner, lease_expires_at FROM approval_intents WHERE run_id=? AND decision='approving'",(str(run_id),)).fetchone()
+        if not chk or chk['lease_owner']!=lease_id or (chk['lease_expires_at'] and chk['lease_expires_at']<now()):
+            raise ValueError('stale_fencing_token: lease expired or superseded before journal write')
 
     memory_id=None
     try:
@@ -616,11 +648,15 @@ def approve_workflow(run_id, operator_note=''):
         else:
             raise ValueError(f"unsupported proposed_action kind: {prop.get('kind')}")
         with db('ops') as c:
-            c.execute("UPDATE approval_intents SET memory_id=?, decision='approved', updated_at=? WHERE run_id=?",(memory_id, now(), str(run_id)))
+            cur_fin=c.execute("UPDATE approval_intents SET memory_id=?, decision='approved', updated_at=? WHERE run_id=? AND lease_owner=? AND decision='approving'",(memory_id, now(), str(run_id), lease_id))
+            if cur_fin.rowcount==0:
+                raise ValueError('stale_fencing_token: approval lease expired or superseded before finalization')
     except Exception:
         with db('ops') as c:
-            c.execute("UPDATE workflow_runs SET status='awaiting_approval', updated_at=? WHERE run_id=? AND status='approving'",(now(), str(run_id)))
-            c.execute("DELETE FROM approval_intents WHERE run_id=? AND decision='approving' AND memory_id IS NULL",(str(run_id),))
+            c.execute("DELETE FROM approval_intents WHERE run_id=? AND lease_owner=? AND decision='approving' AND memory_id IS NULL",(str(run_id), lease_id))
+            rem=c.execute('SELECT 1 FROM approval_intents WHERE run_id=?',(str(run_id),)).fetchone()
+            if not rem:
+                c.execute("UPDATE workflow_runs SET status='awaiting_approval', updated_at=? WHERE run_id=? AND status='approving'",(now(), str(run_id)))
         raise
     done=list(state['completed_steps'])+['human_approved','committed_to_memory']
     checkpoint['approval_resolution']={'decision':'approved','memory_id':memory_id,'operator_note':operator_note,'resolved_at':now(),'orders':'disabled'}
@@ -741,12 +777,37 @@ def list_eval_runs(limit=10):
     return out
 
 def record_scheduled_job(job_name, schedule_window, status, summary=None):
-    """v0.6.0 A03: Persist scheduled job execution state for Task Scheduler / CLI."""
+    """Persist scheduled job state. A later run of the same window after an error increments retry_count."""
     jid=f'{job_name}:{schedule_window}'
+    payload=dict(summary or {})
     with db('ops') as c:
         schema(c)
-        c.execute('INSERT OR REPLACE INTO scheduled_jobs VALUES(?,?,?,?,?,?)',(jid,str(job_name),str(schedule_window),str(status),json.dumps(summary or {},ensure_ascii=False,default=str),now()))
-    return {'job_id':jid,'status':status}
+        prev=c.execute('SELECT status, summary_json FROM scheduled_jobs WHERE job_id=?',(jid,)).fetchone()
+        retries=0
+        if prev:
+            try: retries=int(json.loads(prev['summary_json'] or '{}').get('retry_count') or 0)
+            except (TypeError, ValueError, json.JSONDecodeError): retries=0
+            if prev['status']=='error': retries+=1
+        payload['retry_count']=retries
+        c.execute('INSERT OR REPLACE INTO scheduled_jobs VALUES(?,?,?,?,?,?)',(jid,str(job_name),str(schedule_window),str(status),json.dumps(payload,ensure_ascii=False,default=str),now()))
+    return {'job_id':jid,'status':status,'retry_count':retries}
+
+def run_daily_monitoring():
+    """Run discovery and the policy audit, emit deduplicated alerts, and record failure for a later retry."""
+    window=now()[:10]
+    try:
+        disc=decision.discover_opportunities()
+        pol=quant.evaluate_policy(mode='AUDIT')
+        emitted=[]
+        for b in (pol.get('hard_blocks') or []):
+            emitted.append(emit_alert(f"policy:{b['rule']}", b.get('symbol',''), 'high', f"IPS Hard Block: {b['rule']}", str(b.get('detail') or b)))
+        for cnd in (disc.get('candidates') or []):
+            emitted.append(emit_alert(f"opp:{cnd['symbol']}", cnd['symbol'], 'info', f"Opportunity Candidate: {cnd['symbol']}", f"score={cnd['composite_score']} roic={cnd['roic']} disc={cnd['valuation_discount_pct']}"))
+        rec=record_scheduled_job('daily_monitoring', window, 'ok', {'candidates':len(disc.get('candidates') or []),'alerts':len(emitted),'discovery_status':disc.get('status')})
+        return {'status':'ok','discovery_status':disc.get('status'),'alerts_processed':len(emitted),'retry_count':rec['retry_count'],'orders':'disabled'}
+    except Exception as exc:
+        rec=record_scheduled_job('daily_monitoring', window, 'error', {'error':type(exc).__name__,'message':str(exc)[:300]})
+        return {'status':'error','error':type(exc).__name__,'message':str(exc)[:300],'retry_count':rec['retry_count'],'orders':'disabled'}
 
 def emit_alert(dedup_key, symbol, severity, title, detail, evidence_ids=None):
     """v0.6.0 A03: Deduplicated local alert emission with hit_count tracking."""
@@ -778,7 +839,7 @@ def acknowledge_alert(dedup_key):
 def shadow_mode_check():
     """v1.0 P02: Fail-closed operational readiness check across Flex freshness, Broker reconciliation, IPS coverage, workflow health, and Evals."""
     from . import broker
-    snap=finance.load_full_portfolio_snapshot()
+    snap=finance.decision_snapshot()
     rec=broker.reconcile_live_to_flex()
     pol=quant.evaluate_policy(snap, mode='AUDIT')
     ev_runs=list_eval_runs(1)
@@ -813,15 +874,3 @@ def shadow_mode_check():
         'orders':'disabled',
         'limitations':['20-day live shadow-mode window and real IBKR TWS socket permissions must be validated on the operator host before production acceptance.']
     }
-
-def run_daily_monitoring():
-    """v0.6.0 A03: Run deterministic opportunity discovery + policy audit and emit deduplicated alerts."""
-    disc=decision.discover_opportunities()
-    pol=quant.evaluate_policy(mode='AUDIT')
-    emitted=[]
-    for b in (pol.get('hard_blocks') or []):
-        emitted.append(emit_alert(f"policy:{b['rule']}", b.get('symbol',''), 'high', f"IPS Hard Block: {b['rule']}", str(b.get('detail') or b)))
-    for c in (disc.get('candidates') or []):
-        emitted.append(emit_alert(f"opp:{c['symbol']}", c['symbol'], 'info', f"Opportunity Candidate: {c['symbol']}", f"score={c['composite_score']} roic={c['roic']} disc={c['valuation_discount_pct']}"))
-    record_scheduled_job('daily_monitoring', now()[:10], 'ok', {'candidates':len(disc.get('candidates') or []),'alerts':len(emitted)})
-    return {'status':'ok','discovery_status':disc.get('status'),'alerts_processed':len(emitted),'orders':'disabled'}

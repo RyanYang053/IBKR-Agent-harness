@@ -1,0 +1,665 @@
+{
+  "schema_version": 1,
+  "result": "OFFLINE_VERIFIED",
+  "production_accepted": false,
+  "live_verified": false,
+  "baseline_sha": "fad9786bb7eda3a1061d44ce7ea547f394ad2c89",
+  "parent_head": "8018cef1231c9b7a2f6df2d53931097a57d69989",
+  "source_sha256": "0b0823a8f7bd5dc0c9c46ace4ae70a7329dbb7e4d23f0b2c7d200361490a17ae",
+  "source_file_count": 51,
+  "source_unchanged_during_run": true,
+  "manifest_sha256": "4b32688339d92e0e43156a072d8e092a36c3a684cf424a1baacb8c31ea545b2b",
+  "started_at": "2026-11-21T18:53:36.327394+00:00",
+  "finished_at": "2026-11-21T18:54:29.169320+00:00",
+  "python": "3.13.1 (tags/v3.13.1:0671451, Dec  3 2024, 19:06:28) [MSC v.1942 64 bit (AMD64)]",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "steps": [
+    {
+      "name": "compile",
+      "command": [
+        "C:\\Users\\yang0\\Personal Agent Framework\\.venv-qa\\Scripts\\python.exe",
+        "-m",
+        "compileall",
+        "-q",
+        "personal_agent",
+        "dashboard.py",
+        "scripts/verify.py",
+        "tests/acceptance"
+      ],
+      "exit_code": 0,
+      "started_at": "2026-11-21T18:53:36.333107+00:00",
+      "finished_at": "2026-11-21T18:53:36.892070+00:00",
+      "log": "validation/evidence/compile.log",
+      "sha256": "99e46a9a6ccb51867c400f4ed92c00c915240660b8c7b052dfc6e51de40c2f10"
+    },
+    {
+      "name": "dependencies",
+      "command": [
+        "C:\\Users\\yang0\\Personal Agent Framework\\.venv-qa\\Scripts\\python.exe",
+        "-m",
+        "pip",
+        "check"
+      ],
+      "exit_code": 0,
+      "started_at": "2026-11-21T18:53:36.892482+00:00",
+      "finished_at": "2026-11-21T18:53:39.294657+00:00",
+      "log": "validation/evidence/dependencies.log",
+      "sha256": "612ed3ae7c7eb3ccc0c075e9b39f9a64bdf25c5bc8b98c60c457862acb3b5299"
+    },
+    {
+      "name": "baseline",
+      "command": [
+        "C:\\Users\\yang0\\Personal Agent Framework\\.venv-qa\\Scripts\\python.exe",
+        "scripts/verify.py"
+      ],
+      "exit_code": 0,
+      "started_at": "2026-11-21T18:53:39.295090+00:00",
+      "finished_at": "2026-11-21T18:54:08.961327+00:00",
+      "log": "validation/evidence/baseline.log",
+      "sha256": "96f82d7a9cda8ed3e18af15899dfbae4d401e8ffe6650733f1ddf08f79532a65"
+    },
+    {
+      "name": "acceptance",
+      "command": [
+        "C:\\Users\\yang0\\Personal Agent Framework\\.venv-qa\\Scripts\\python.exe",
+        "-m",
+        "pytest",
+        "tests/acceptance",
+        "-q",
+        "--strict-markers",
+        "--strict-config",
+        "-p",
+        "no:cacheprovider",
+        "--junitxml=C:\\Users\\yang0\\Personal Agent Framework\\validation\\evidence\\acceptance.xml"
+      ],
+      "exit_code": 0,
+      "started_at": "2026-11-21T18:54:08.961707+00:00",
+      "finished_at": "2026-11-21T18:54:29.032490+00:00",
+      "log": "validation/evidence/acceptance.log",
+      "sha256": "2d60cda242b416c955954d9577db093a383636e4370e1aa7a6e607dfe95cfe65"
+    }
+  ],
+  "cases": [
+    {
+      "id": "F01",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_financial::test_F01_untruncated_analytics_invariant_to_max_tool_rows",
+          "status": "PASS",
+          "seconds": "1.103"
+        }
+      ]
+    },
+    {
+      "id": "F02",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_financial::test_F02_consistent_snapshot_read_and_non_overwriting_historical_import",
+          "status": "PASS",
+          "seconds": "0.124"
+        }
+      ]
+    },
+    {
+      "id": "F03",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_financial::test_F03_freshness_future_statement_missing_cash_and_empty_cash_only",
+          "status": "PASS",
+          "seconds": "0.154"
+        }
+      ]
+    },
+    {
+      "id": "F04",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_financial::test_F04_multicurrency_cash_flows_intermediate_dates_and_transfers",
+          "status": "PASS",
+          "seconds": "0.135"
+        }
+      ]
+    },
+    {
+      "id": "F05",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_financial::test_F05_xirr_same_day_multiple_roots_and_known_answer",
+          "status": "PASS",
+          "seconds": "0.019"
+        }
+      ]
+    },
+    {
+      "id": "F06",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_financial::test_F06_transaction_reducer_strict_validation",
+          "status": "PASS",
+          "seconds": "0.083"
+        }
+      ]
+    },
+    {
+      "id": "F07",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_financial::test_F07_account_buying_power_and_non_margin_tfsa",
+          "status": "PASS",
+          "seconds": "0.128"
+        }
+      ]
+    },
+    {
+      "id": "F08",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_financial::test_F08_option_delta_notional_zero_premium_and_invalid_greeks",
+          "status": "PASS",
+          "seconds": "0.108"
+        }
+      ]
+    },
+    {
+      "id": "F09",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_financial::test_F09_gross_leverage_hard_gate_across_accounts",
+          "status": "PASS",
+          "seconds": "0.079"
+        }
+      ]
+    },
+    {
+      "id": "F10",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_financial::test_F10_allocator_existing_cash_vs_new_contribution",
+          "status": "PASS",
+          "seconds": "0.259"
+        }
+      ]
+    },
+    {
+      "id": "F11",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_financial::test_F11_canadian_acb_pooled_split_dedup_and_fx",
+          "status": "PASS",
+          "seconds": "0.299"
+        }
+      ]
+    },
+    {
+      "id": "F12",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_financial::test_F12_pnl_bridge_and_option_attribution_units",
+          "status": "PASS",
+          "seconds": "0.094"
+        }
+      ]
+    },
+    {
+      "id": "B01",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_broker::test_B01_tws_adapter_callbacks_and_timeout",
+          "status": "PASS",
+          "seconds": "0.094"
+        }
+      ]
+    },
+    {
+      "id": "B02",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_broker::test_B02_partial_capture_never_marked_live_verified",
+          "status": "PASS",
+          "seconds": "0.213"
+        }
+      ]
+    },
+    {
+      "id": "B03",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_broker::test_B03_reconciliation_per_account_and_currency",
+          "status": "PASS",
+          "seconds": "0.132"
+        }
+      ]
+    },
+    {
+      "id": "B04",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_broker::test_B04_quote_reqid_9001_vs_conid_9001_and_sentinel_delta",
+          "status": "PASS",
+          "seconds": "0.023"
+        }
+      ]
+    },
+    {
+      "id": "B05",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_broker::test_B05_broker_enrichment_preserves_flex_and_updates_hash",
+          "status": "PASS",
+          "seconds": "0.167"
+        }
+      ]
+    },
+    {
+      "id": "B06",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_broker::test_B06_option_chain_qualification_and_staleness",
+          "status": "PASS",
+          "seconds": "0.032"
+        }
+      ]
+    },
+    {
+      "id": "B07",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_broker::test_B07_readonly_broker_contract_enforced",
+          "status": "PASS",
+          "seconds": "0.028"
+        }
+      ]
+    },
+    {
+      "id": "C01",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_research::test_C01_sync_filings_transport_populates_equity_and_pit_without_manual_inserts",
+          "status": "PASS",
+          "seconds": "0.110"
+        }
+      ]
+    },
+    {
+      "id": "C02",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_research::test_C02_comparative_prior_year_facts_same_fy_fp_retained",
+          "status": "PASS",
+          "seconds": "0.121"
+        }
+      ]
+    },
+    {
+      "id": "C03",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_research::test_C03_pit_selects_by_publication_time_not_insertion_order",
+          "status": "PASS",
+          "seconds": "0.113"
+        }
+      ]
+    },
+    {
+      "id": "C04",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_research::test_C04_ytd_differencing_and_component_availability",
+          "status": "PASS",
+          "seconds": "0.122"
+        }
+      ]
+    },
+    {
+      "id": "C05",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_research::test_C05_nonadditive_shares_and_bs_not_summed",
+          "status": "PASS",
+          "seconds": "0.142"
+        }
+      ]
+    },
+    {
+      "id": "C06",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_research::test_C06_non_contiguous_quarters_block_ttm",
+          "status": "PASS",
+          "seconds": "0.137"
+        }
+      ]
+    },
+    {
+      "id": "C07",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_research::test_C07_distinct_evidence_hashes_for_distinct_documents",
+          "status": "PASS",
+          "seconds": "0.102"
+        }
+      ]
+    },
+    {
+      "id": "C08",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_research::test_C08_dcf_golden_model_and_invalid_input_rejection",
+          "status": "PASS",
+          "seconds": "0.020"
+        }
+      ]
+    },
+    {
+      "id": "C09",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_research::test_C09_sector_valuation_methods_rim_and_sotp",
+          "status": "PASS",
+          "seconds": "0.022"
+        }
+      ]
+    },
+    {
+      "id": "C10",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_research::test_C10_e2e_sec_pipeline_to_auto_discovery",
+          "status": "PASS",
+          "seconds": "0.141"
+        }
+      ]
+    },
+    {
+      "id": "C11",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_research::test_C11_expectations_partial_actuals_and_forecast_pit",
+          "status": "PASS",
+          "seconds": "0.202"
+        }
+      ]
+    },
+    {
+      "id": "C12",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_research::test_C12_research_sec_forensics_missing_vs_cached",
+          "status": "PASS",
+          "seconds": "0.121"
+        }
+      ]
+    },
+    {
+      "id": "W01",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_workflow::test_W01_immutable_params_resume_and_reject_tamper",
+          "status": "PASS",
+          "seconds": "0.297"
+        }
+      ]
+    },
+    {
+      "id": "W02",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_workflow::test_W02_concurrent_approve_and_reject_race_single_journal",
+          "status": "PASS",
+          "seconds": "0.455"
+        }
+      ]
+    },
+    {
+      "id": "W03",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_workflow::test_W03_crash_recovery_after_claim_and_ttl_expiry",
+          "status": "PASS",
+          "seconds": "1.245"
+        }
+      ]
+    },
+    {
+      "id": "W04",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_workflow::test_W04_ic_memo_blocks_failed_allocator_or_blocked_gate",
+          "status": "PASS",
+          "seconds": "2.409"
+        }
+      ]
+    },
+    {
+      "id": "W05",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_workflow::test_W05_monitoring_dedup_alerts_and_scheduled_jobs",
+          "status": "PASS",
+          "seconds": "0.082"
+        }
+      ]
+    },
+    {
+      "id": "W06",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_workflow::test_W06_mcp_cli_and_public_surface_consistency",
+          "status": "PASS",
+          "seconds": "0.034"
+        }
+      ]
+    },
+    {
+      "id": "S01",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_security::test_S01_public_mcp_process_db_isolation_and_canary",
+          "status": "PASS",
+          "seconds": "0.226"
+        }
+      ]
+    },
+    {
+      "id": "S02",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_security::test_S02_local_privacy_routing_boundary",
+          "status": "PASS",
+          "seconds": "0.030"
+        }
+      ]
+    },
+    {
+      "id": "S03",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_security::test_S03_ssrf_blocks_loopback_private_ipv6_creds_and_redirects",
+          "status": "PASS",
+          "seconds": "0.156"
+        }
+      ]
+    },
+    {
+      "id": "S04",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_security::test_S04_knowledge_index_blocks_secrets_and_traversal",
+          "status": "PASS",
+          "seconds": "0.096"
+        }
+      ]
+    },
+    {
+      "id": "Q01",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_quant::test_Q01_bars_open_close_provenance_and_atomic_backfill",
+          "status": "PASS",
+          "seconds": "0.120"
+        }
+      ]
+    },
+    {
+      "id": "Q02",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_quant::test_Q02_backtest_next_bar_open_and_financing_cost_monotonicity",
+          "status": "PASS",
+          "seconds": "0.102"
+        }
+      ]
+    },
+    {
+      "id": "Q03",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_quant::test_Q03_covariance_psd_and_stress_fx_consistency",
+          "status": "PASS",
+          "seconds": "0.207"
+        }
+      ]
+    },
+    {
+      "id": "Q04",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_quant::test_Q04_etf_lookthrough_no_double_count_and_unallocated",
+          "status": "PASS",
+          "seconds": "0.022"
+        }
+      ]
+    },
+    {
+      "id": "Q05",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_quant::test_Q05_bsm_iv_inversion_covered_call_and_roll_credit",
+          "status": "PASS",
+          "seconds": "0.020"
+        }
+      ]
+    },
+    {
+      "id": "Q06",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_quant::test_Q06_cashflow_strategy_and_brier_learning_boundaries",
+          "status": "PASS",
+          "seconds": "0.179"
+        }
+      ]
+    },
+    {
+      "id": "O01",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_ops::test_O01_backup_and_restore_rehearsal_across_all_dbs",
+          "status": "PASS",
+          "seconds": "0.260"
+        }
+      ]
+    },
+    {
+      "id": "O02",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_ops::test_O02_shadow_readiness_fails_closed_for_stale_replay_or_blocked",
+          "status": "PASS",
+          "seconds": "0.202"
+        }
+      ]
+    },
+    {
+      "id": "O03",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_ops::test_O03_cli_error_exits_nonzero_and_eval_subprocess_isolation",
+          "status": "PASS",
+          "seconds": "3.513"
+        }
+      ]
+    },
+    {
+      "id": "O04",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_ops::test_O04_legacy_db_migration_idempotent",
+          "status": "PASS",
+          "seconds": "0.064"
+        }
+      ]
+    },
+    {
+      "id": "O05",
+      "status": "PASS",
+      "executed_cases": [
+        {
+          "node": "tests.acceptance.test_ops::test_O05_cli_help_and_headless_dashboard_smoke",
+          "status": "PASS",
+          "seconds": "1.208"
+        }
+      ]
+    }
+  ],
+  "extra_tests": [],
+  "junit_sha256": "71b7d4180db5136a4fed66c1c4753139e847be7c94fd3e6240ff75171e2fe69b",
+  "mandatory_count": 52,
+  "passed_count": 52,
+  "baseline_success_marker": true,
+  "operator_gates": [
+    "G2 real IBKR/SEC/Windows permissions not verified by offline gate",
+    "G3 documented shadow operation not verified by offline gate"
+  ]
+}

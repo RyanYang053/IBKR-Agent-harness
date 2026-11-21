@@ -1,0 +1,2 @@
+COMMAND: C:\Users\yang0\Personal Agent Framework\.venv-qa\Scripts\python.exe validation/release_gate.py --root .
+OFFLINE_VERIFIED: 52/52 mandatory IDs passed. See validation/report.json

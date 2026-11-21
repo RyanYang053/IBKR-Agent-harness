@@ -1,0 +1,20 @@
+COMMAND: C:\Users\yang0\Personal Agent Framework\.venv-qa\Scripts\python.exe -m pytest tests\independent\test_offline_workflows.py -vv -ra -p no:cacheprovider --junitxml=C:\Users\yang0\Personal Agent Framework\validation\evidence\independent\workflows.xml
+============================= test session starts =============================
+platform win32 -- Python 3.13.1, pytest-8.4.2, pluggy-1.7.0 -- C:\Users\yang0\Personal Agent Framework\.venv-qa\Scripts\python.exe
+rootdir: C:\Users\yang0\Personal Agent Framework
+configfile: pyproject.toml
+plugins: anyio-4.16.0, platformdirs-4.14.8
+collecting ... collected 9 items
+
+tests/independent/test_offline_workflows.py::test_flex_import_snapshot_risk_trade_and_policy PASSED [ 11%]
+tests/independent/test_offline_workflows.py::test_recorded_sec_filings_pit_ttm_valuation_and_discovery PASSED [ 22%]
+tests/independent/test_offline_workflows.py::test_research_committee_approval_journal_and_restart PASSED [ 33%]
+tests/independent/test_offline_workflows.py::test_concurrent_approval_commits_one_journal PASSED [ 44%]
+tests/independent/test_offline_workflows.py::test_broker_callbacks_freshness_and_risk_fingerprint PASSED [ 55%]
+tests/independent/test_offline_workflows.py::test_scheduled_monitor_failure_retry_report_and_restore PASSED [ 66%]
+tests/independent/test_offline_workflows.py::test_shadow_and_live_gates_stay_external PASSED [ 77%]
+tests/independent/test_offline_workflows.py::test_broker_disconnect_retry_entitlement_and_stale_last_good PASSED [ 88%]
+tests/independent/test_offline_workflows.py::test_sec_filings_to_committee_decision_chain PASSED [100%]
+
+- generated xml file: C:\Users\yang0\Personal Agent Framework\validation\evidence\independent\workflows.xml -
+============================= 9 passed in 26.09s ==============================

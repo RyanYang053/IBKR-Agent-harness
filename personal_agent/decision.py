@@ -3,7 +3,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 import json, math
 from .core import config, db
-from .finance import day, dec, performance, portfolio, schema as finance_schema
+from .finance import day, dec, load_full_portfolio_snapshot, performance, portfolio, schema as finance_schema
 from . import knowledge, market
 
 def _ready(require_fresh=False):
@@ -12,9 +12,22 @@ def _ready(require_fresh=False):
         return snap, {'status':'blocked','reason':snap.get('status','unavailable'),'stale':snap.get('stale'),'limitations':['Current estimates are blocked until every account shares one fresh statement date.']}
     return snap, None
 
+def _ready_full(require_fresh=False):
+    """Load full untruncated PortfolioSnapshot for internal risk, attribution, and tax engines."""
+    csnap=load_full_portfolio_snapshot()
+    if csnap.status in {'not_configured','missing_accounts','date_mismatch','unavailable'} or (require_fresh and not csnap.advice_allowed):
+        return {'status':csnap.status,'stale':csnap.stale}, {'status':'blocked','reason':csnap.status,'stale':csnap.stale,'limitations':['Current estimates are blocked until every account shares one fresh statement date.']}
+    full_pos=[{'account':p.account,'conid':p.conid,'symbol':p.symbol,'asset':p.asset,'currency':p.currency,'quantity':str(p.quantity),'value_base':str(p.market_value_base),'underlying_conid':p.underlying_conid or p.conid,'cost_basis':str(p.cost_basis) if p.cost_basis is not None else None,'fx_rate':str(p.fx_rate_to_base or '1')} for p in csnap.positions]
+    if not full_pos and csnap.as_of:
+        with db('finance') as c:
+            finance_schema(c)
+            full_pos=[dict(r) for r in c.execute('SELECT * FROM positions WHERE date=?',(csnap.as_of,))]
+    snap_dict={'status':csnap.status,'as_of':csnap.as_of,'stale':csnap.stale,'advice_allowed':csnap.advice_allowed,'positions_complete':csnap.positions_complete,'currency':csnap.currency,'nav':str(csnap.nav),'accounts':[{'account':a.account,'nav':str(a.nav),'cash':str(a.cash) if a.cash is not None else None} for a in csnap.accounts],'positions':full_pos,'snapshot_id':csnap.snapshot_id}
+    return snap_dict, None
+
 def exposure(account=None):
-    snap, blocked=_ready()
-    if blocked and snap.get('status') not in {'ok','partial_or_stale'}: return blocked
+    snap, blocked=_ready_full()
+    if blocked and snap.get('status') not in {'ok','partial_or_stale','missing_cash','future_statement'}: return blocked
     rows=[p for p in snap.get('positions',[]) if not account or p['account']==account]
     if not rows: return {'status':'no_positions','as_of':snap.get('as_of'),'limitations':['No summary positions are stored for this filter.']}
     gross=sum((abs(dec(p['value_base'])) for p in rows),Decimal(0))
@@ -127,10 +140,10 @@ def _tax_tag(bucket, pl):
     if bucket in {'tfsa','rrsp','fhsa'}: return bucket+('_tax_sheltered_gain' if pl>=0 else '_non_deductible_loss')
     return 'unspecified_account_tax_type'
 
-def tax_positions(account=None, symbol=None):
+def tax_positions(account=None, symbol=None, limit=50):
     """Per-stock NAV weights, account tax location, statement unrealized P/L, superficial-loss flags, and dividend withholding."""
-    snap, blocked=_ready()
-    if blocked and snap.get('status') not in {'ok','partial_or_stale'}: return blocked
+    snap, blocked=_ready_full()
+    if blocked and snap.get('status') not in {'ok','partial_or_stale','missing_cash','future_statement'}: return blocked
     target_sym=str(symbol or '').strip().upper() or None
     all_positions=snap.get('positions') or []
     nav=dec(snap['nav']) if snap.get('nav') else None
@@ -184,7 +197,8 @@ def tax_positions(account=None, symbol=None):
         if 'tfsa' in buckets and str(lots[0].get('currency') or '').upper()=='USD': reasons.append('US dividends in TFSA remain subject to 15% IRS withholding with no Canadian foreign tax credit.')
         items.append({'conid':cid,'symbol':sym,'asset':lots[0].get('asset'),'currency':lots[0].get('currency'),'total_quantity':str(total_qty),'total_value_base':str(total_val),'weight_of_nav':str(total_val/nav) if nav else None,'taxable_weight_of_nav':str(tax_val/nav) if nav else None,'registered_weight_of_nav':str(reg_val/nav) if nav else None,'unrealized_pl_base_statement_fx':str(total_pl) if has_pl else None,'superficial_loss_watch':superficial,'tax_notes':reasons,'quote':{'price':q.get('price'),'currency':q.get('currency'),'freshness':q.get('freshness'),'as_of':q.get('as_of')},'lots':lot_rows})
     items.sort(key=lambda r:abs(dec(r['total_value_base'])), reverse=True)
-    return {'status':'ok' if snap.get('status')=='ok' else snap.get('status'),'as_of':snap.get('as_of'),'advice_allowed':snap.get('advice_allowed'),'currency':snap.get('currency'),'nav':snap.get('nav'),'count':len(items),'positions':items[:50],'limitations':['Cost basis in CAD multiplies Flex costBasisMoney by statement-date fxRateToBase; exact Canadian tax ACB requires settlement-date FX per lot and cross-brokerage identical-property pooling.','Delayed or missing quotes are never substituted for live prices.']}
+    out_pos=items if limit is None else items[:int(limit)]
+    return {'status':'ok' if snap.get('status')=='ok' else snap.get('status'),'as_of':snap.get('as_of'),'advice_allowed':snap.get('advice_allowed'),'currency':snap.get('currency'),'nav':snap.get('nav'),'count':len(items),'positions':out_pos,'limitations':['Cost basis in CAD multiplies Flex costBasisMoney by statement-date fxRateToBase; exact Canadian tax ACB requires settlement-date FX per lot and cross-brokerage identical-property pooling.','Delayed or missing quotes are never substituted for live prices.']}
 
 def _edgar_snapshot(symbol):
     rows=market.filings(symbol)
@@ -933,18 +947,22 @@ def compute_canadian_acb(symbol=None, account=None):
         except Exception: d_iso='1900-01-01'
         parsed.append((d_iso, 0 if r['category']=='corporate_action' else 1, r['account'], r['category'], r['record_id'], f))
     parsed.sort(key=lambda x:(x[0], x[1], x[4]))
-    pools={}; realized=[]; warnings=[]
+    pools={}; realized=[]; warnings=[]; seen_splits=set()
     for d_iso, _, acct, cat, rid, f in parsed:
         sym=str(f.get('symbol') or '').strip().upper()
         if not sym or (sym_filter and sym!=sym_filter): continue
         if str(f.get('assetCategory') or 'STK').upper()=='CASH': continue
         bucket=_tax_bucket(acct)
+        if bucket in {'tfsa','rrsp','fhsa'}: continue
         key=(bucket, sym)
         pool=pools.setdefault(key, {'shares':Decimal(0),'total_acb_base':Decimal(0)})
         if cat=='corporate_action':
             ratio_raw=f.get('splitRatio') or f.get('ratio')
             if ratio_raw not in (None,'') and dec(ratio_raw)>0 and pool['shares']>0:
-                pool['shares']=pool['shares']*dec(ratio_raw)
+                sp_key=(d_iso, bucket, sym, str(dec(ratio_raw)))
+                if sp_key not in seen_splits:
+                    seen_splits.add(sp_key)
+                    pool['shares']=pool['shares']*dec(ratio_raw)
             continue
         side=str(f.get('buySell') or '').strip().upper()
         qty=abs(dec(f.get('quantity') or '0'))
@@ -959,7 +977,14 @@ def compute_canadian_acb(symbol=None, account=None):
         mult=dec(f.get('multiplier') or '1')
         gross_base=qty*dec(f['tradePrice'])*mult*fx
         comm_cur=str(f.get('ibCommissionCurrency') or cur).upper()
-        comm_fx=Decimal('1') if comm_cur==base_cur else fx
+        if comm_cur==base_cur:
+            comm_fx=Decimal('1')
+        elif comm_cur==cur:
+            comm_fx=fx
+        elif f.get('commissionFxRateToBase') not in (None,'') and dec(f.get('commissionFxRateToBase'))>0:
+            comm_fx=dec(f['commissionFxRateToBase'])
+        else:
+            return {'status':'missing_fx_rate','symbol':sym,'currency':comm_cur,'record_id':rid,'limitations':[f'Missing FX rate for third-currency commission {comm_cur} on trade {rid}.']}
         comm_base=abs(dec(f.get('ibCommission') or '0'))*comm_fx
         if side=='BUY':
             pool['shares']+=qty
@@ -1001,7 +1026,10 @@ def discover_opportunities(universe_symbols=None, features_by_symbol=None, max_c
                 excluded.append({'symbol':sym,'reason':'insufficient_fundamental_and_price_features'}); continue
             px0=float(b[0]['close']); px1=float(b[-1]['close']); dd=(px1/max(px0,1e-6))-1.0
             excluded.append({'symbol':sym,'reason':'price_only_without_fundamental_quality_features','return_60d':round(dd,4)}); continue
-        roic=float(f.get('roic') or 0.0); fcf_g=float(f.get('fcf_growth') or 0.0); dil=float(f.get('dilution_rate') or 0.0)
+        if f.get('roic') is None or f.get('fcf_growth') is None or f.get('dilution_rate') is None:
+            data_missing_cnt+=1
+            excluded.append({'symbol':sym,'reason':'missing_fcf_growth_or_dilution','roic':f.get('roic'),'fcf_growth':f.get('fcf_growth'),'dilution':f.get('dilution_rate')}); continue
+        roic=float(f['roic']); fcf_g=float(f['fcf_growth']); dil=float(f['dilution_rate'])
         if roic<0.10 or fcf_g<0.0 or dil>0.05:
             excluded.append({'symbol':sym,'reason':'failed_quality_or_dilution_floor','roic':roic,'fcf_growth':fcf_g,'dilution':dil}); continue
         disc=f.get('valuation_discount_pct')
@@ -1010,8 +1038,8 @@ def discover_opportunities(universe_symbols=None, features_by_symbol=None, max_c
             rev_ttm=f.get('revenue_ttm'); op_m=f.get('operating_margin'); sh=f.get('shares'); nd=f.get('net_debt') or 0.0
             q_info=market.quote(sym); b_info=market.bars(sym, 1)
             mkt_px=float(q_info['price']) if q_info.get('price') else (float(b_info[-1]['close']) if b_info else None)
-            if rev_ttm and op_m and sh and float(sh)>0 and mkt_px and mkt_px>0:
-                val_res=quant.driver_based_valuation(str(rev_ttm), str(max(0.03, min(0.25, fcf_g))), str(max(0.05, float(op_m))), net_debt=str(nd), shares=str(sh))
+            if rev_ttm and op_m is not None and sh and float(sh)>0 and mkt_px and mkt_px>0:
+                val_res=quant.driver_based_valuation(str(rev_ttm), str(fcf_g), str(float(op_m)), net_debt=str(nd), shares=str(sh))
                 fair_px=val_res['probability_weighted_per_share']
                 disc=(fair_px-mkt_px)/fair_px if fair_px>0 else 0.0
             else:
@@ -1031,6 +1059,7 @@ def discover_opportunities(universe_symbols=None, features_by_symbol=None, max_c
 
 def daily_pnl_bridge(days=30):
     """v0.7.0 Q03: Reconciled Portfolio NAV change bridge into external flows, income, commissions, and market/FX residual."""
+    from . import finance
     snap=finance.load_full_portfolio_snapshot()
     if snap.status in {'unavailable','not_configured','missing_accounts','date_mismatch'}:
         return {'status':snap.status}

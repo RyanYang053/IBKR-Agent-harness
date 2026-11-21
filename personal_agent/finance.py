@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from .core import db, config, digest, private_dir, HOME, now, bounded, operator_env
+from .core import db, config, digest, private_dir, home, now, bounded, operator_env
 
 class MissingFxRateError(ValueError):
     pass
@@ -16,6 +16,7 @@ class AccountRecord:
     nav: Decimal
     cash: Decimal | None
     allow_margin: bool = True
+    buying_power: Decimal | None = None
     source: str = ''
 
 @dataclass(frozen=True)
@@ -28,11 +29,24 @@ class PositionRecord:
     quantity: Decimal
     multiplier: Decimal
     market_value_base: Decimal
+    underlying_conid: str | None = None
+    cost_basis: Decimal | None = None
     underlying_price: Decimal | None = None
     underlying_currency: str | None = None
     fx_rate_to_base: Decimal | None = None
     delta: Decimal | None = None
     source: str = ''
+
+def compute_snapshot_id(as_of, currency, accounts, positions):
+    """Canonical SHA-256 snapshot fingerprint covering all account margin/cash fields and position/Greek/FX fields."""
+    sid_payload={
+        'schema':'v0.3.4',
+        'as_of':as_of,
+        'currency':currency,
+        'accts':sorted((a.account,a.tax_bucket,str(a.nav.normalize()),str(a.cash.normalize()) if a.cash is not None else None,str(a.buying_power.normalize()) if a.buying_power is not None else None,a.allow_margin) for a in accounts),
+        'pos':sorted((p.account,p.conid,p.symbol,p.asset,str(p.quantity.normalize()),str(p.multiplier.normalize()),str(p.market_value_base.normalize()),p.underlying_conid,str(p.cost_basis.normalize()) if p.cost_basis is not None else None,str(p.underlying_price.normalize()) if p.underlying_price is not None else None,str(p.fx_rate_to_base.normalize()) if p.fx_rate_to_base is not None else None,str(p.delta.normalize()) if p.delta is not None else None) for p in positions)
+    }
+    return hashlib.sha256(json.dumps(sid_payload, sort_keys=True).encode('utf-8')).hexdigest()[:16]
 
 @dataclass(frozen=True)
 class PortfolioSnapshot:
@@ -61,8 +75,9 @@ def day(x):
     x=str(x).split(';',1)[0].split(' ',1)[0]
     return datetime.strptime(x,'%Y%m%d' if len(x)==8 else '%Y-%m-%d').date().isoformat()
 def _stale(as_of,cfg):
-    """Stale when the statement is older than the last completed business day, or past the configured calendar limit."""
+    """Stale when the statement is in the future, older than the last completed business day, or past the configured calendar limit."""
     reported=date.fromisoformat(as_of)
+    if reported>date.today(): return True
     if (date.today()-reported).days>int(cfg.get('max_snapshot_age_days',4)): return True
     expected=date.today()-timedelta(days=1)
     while expected.weekday()>=5: expected-=timedelta(days=1)
@@ -88,7 +103,7 @@ def import_xml(path):
     if not accounts or len(set(accounts.values()))!=len(accounts):
         found=sorted({s.get('accountId') or '' for s in all_stmts})
         raise ValueError('configure unique finance.accounts aliases for: '+', '.join(found))
-    raw=private_dir(HOME/'raw'/'ibkr')/(h+'.xml'); raw.write_bytes(data)
+    raw=private_dir(home()/'raw'/'ibkr')/(h+'.xml'); raw.write_bytes(data)
     summary=[]
     with db('finance') as c:
         schema(c)
@@ -113,7 +128,11 @@ def import_xml(path):
             if not nav_rows: raise ValueError('missing required NAV in base section')
             if not any(r[1]==d for r in nav_rows): raise ValueError('missing NAV for statement end date')
             if len({r[1] for r in nav_rows})!=len(nav_rows): raise ValueError('duplicate NAV dates')
-            for r in nav_rows: c.execute('INSERT OR REPLACE INTO nav VALUES(?,?,?,?,?,?)',r)
+            for r in nav_rows:
+                ex_nav=c.execute('SELECT sr.generated FROM nav n LEFT JOIN sources sr ON n.source=sr.hash WHERE n.account=? AND n.date=?',(r[0],r[1])).fetchone()
+                if ex_nav and ex_nav['generated'] and stmt_gen and ex_nav['generated']>stmt_gen:
+                    continue
+                c.execute('INSERT OR REPLACE INTO nav VALUES(?,?,?,?,?,?)',r)
             container=s.find('OpenPositions'); pos=[]; seen=set()
             if container is not None:
                 for n in container.findall('OpenPosition'):
@@ -159,6 +178,7 @@ def load_full_portfolio_snapshot():
     acct_cons_cfg=cfg.get('account_constraints') or {}
     with db('finance') as c:
         schema(c)
+        c.execute('BEGIN')
         latest={a:c.execute('SELECT * FROM nav WHERE account=? ORDER BY date DESC LIMIT 1',(a,)).fetchone() for a in sorted(aliases)}
         if any(r is None for r in latest.values()):
             return PortfolioSnapshot(snapshot_id='missing_accounts',as_of=None,status='missing_accounts',stale=True,advice_allowed=False,positions_complete=False,currency=base_cur,nav=Decimal(0),cash=Decimal(0))
@@ -186,19 +206,30 @@ def load_full_portfolio_snapshot():
                     asset=str(p.get('asset') or 'STK').upper()
                     if asset=='CASH': continue
                     fx_v=dec(p['fx_rate']) if p.get('fx_rate') not in (None,'') else (Decimal(1) if cur==base_cur else None)
+                    cb_v=dec(p['cost_basis']) if p.get('cost_basis') not in (None,'') else None
                     pos_recs.append(PositionRecord(
                         account=a, conid=str(p['conid']), symbol=str(p['symbol']).upper(), asset=asset,
                         currency=cur, quantity=dec(p['quantity']), multiplier=Decimal(100) if asset=='OPT' else Decimal(1),
-                        market_value_base=dec(p['value_base']), underlying_currency=cur, fx_rate_to_base=fx_v, source=str(latest[a]['source'] or '')
+                        market_value_base=dec(p['value_base']), underlying_conid=str(p.get('underlying_conid') or p['conid']),
+                        cost_basis=cb_v, underlying_currency=cur, fx_rate_to_base=fx_v, source=str(latest[a]['source'] or '')
                     ))
-    sid_payload={'schema':'v0.3.3','as_of':d,'currency':base_cur,'accts':[(a.account,a.tax_bucket,str(a.nav.normalize()),str(a.cash.normalize()) if a.cash is not None else None,a.allow_margin) for a in accts],'pos':sorted((p.account,p.conid,p.symbol,p.asset,str(p.quantity.normalize()),str(p.multiplier.normalize()),str(p.market_value_base.normalize()),str(p.fx_rate_to_base.normalize()) if p.fx_rate_to_base is not None else None) for p in pos_recs)}
-    sid=hashlib.sha256(json.dumps(sid_payload, sort_keys=True).encode('utf-8')).hexdigest()[:16]
+    sid=compute_snapshot_id(d, base_cur, accts, pos_recs)
+    is_future=date.fromisoformat(d)>date.today()
+    missing_cash=any(a.cash is None for a in accts)
+    advice_ok=complete and not stale and not is_future and not missing_cash
+    st='future_statement' if is_future else ('missing_cash' if missing_cash else ('ok' if advice_ok else 'partial_or_stale'))
     return PortfolioSnapshot(
-        snapshot_id=sid, as_of=d, status='ok' if complete and not stale else 'partial_or_stale',
-        stale=stale, advice_allowed=complete and not stale, positions_complete=complete,
+        snapshot_id=sid, as_of=d, status=st,
+        stale=stale, advice_allowed=advice_ok, positions_complete=complete,
         currency=base_cur, nav=tot_nav, cash=tot_cash, accounts=tuple(accts), positions=tuple(pos_recs),
         limitations=('Reconciled Flex daily statement; not live broker state.',)
     )
+
+def decision_snapshot(max_broker_age_seconds=300):
+    """Single validated decision snapshot combining full reconciled Flex state with fresh live broker enrichment (when available)."""
+    from . import broker
+    base=load_full_portfolio_snapshot()
+    return broker.enrich_snapshot_with_broker(base, max_age_seconds=max_broker_age_seconds)
 
 def portfolio(limit=None, offset=0):
     cfg=config()['finance']; aliases=set(cfg['accounts'].values())
@@ -268,7 +299,7 @@ def fetch_flex(query_id, token, start=None, end=None):
     for _ in range(12):
         time.sleep(7); data=request('GetStatement',ref); r=xml(data)
         if r.tag=='FlexQueryResponse':
-            p=private_dir(HOME/'raw'/'ibkr')/(digest(data)+'.xml'); p.write_bytes(data); return p
+            p=private_dir(home()/'raw'/'ibkr')/(digest(data)+'.xml'); p.write_bytes(data); return p
         if r.findtext('ErrorCode') not in {'1001','1003','1004','1005','1006','1007','1008','1009','1018','1019','1021'}: raise RuntimeError('Flex retrieval error '+str(r.findtext('ErrorCode')))
     raise TimeoutError('Flex report not ready; retry later')
 EXTERNAL_IN={'deposit','deposits','contribution','contributions'}
@@ -348,15 +379,16 @@ def _xnpv(rate,flows):
         total+=amount/((Decimal(1)+rate)**years)
     return total
 def xirr(cash_flows):
-    """Investor XIRR with dynamic bracketing and multiple-root detection. Returns None if no sign change or ambiguous roots."""
+    """Investor XIRR with fine-grid bracketing and multiple-root detection. Returns None if same-day, no sign change, or multiple roots."""
     if len(cash_flows)<2 or not any(a<0 for _,a in cash_flows) or not any(a>0 for _,a in cash_flows): return None
     ordered=sorted(cash_flows,key=lambda item:item[0])
-    grid=[Decimal(str(x)) for x in (-0.99,-0.9,-0.5,-0.2,0.0,0.2,0.5,1.0,2.5,5.0,10.0,50.0,100.0)]
+    if len({d for d,_ in ordered})<2: return None
+    grid=[Decimal('-0.99')]+[Decimal(str(round(-0.95+0.05*i, 4))) for i in range(60)]+[Decimal(str(x)) for x in (2.5,5.0,10.0,50.0,100.0)]
     vals=[_xnpv(g,ordered) for g in grid]
-    for g,v in zip(grid,vals):
-        if v==0: return g
+    exact_roots=[g for g,v in zip(grid,vals) if v==0]
     brackets=[(grid[i],grid[i+1],vals[i],vals[i+1]) for i in range(len(grid)-1) if vals[i]*vals[i+1]<0]
-    if len(brackets)!=1: return None
+    if len(exact_roots)==1 and not brackets: return exact_roots[0]
+    if exact_roots or len(brackets)!=1: return None
     low,high,lo,hi=brackets[0]
     for _ in range(80):
         mid=(low+high)/2
@@ -471,7 +503,8 @@ def canonical_snapshot(portfolio_dict=None, tax_positions_fallback=None):
         c_val=dec(a['cash']) if a.get('cash') not in (None,'') else None
         if c_val is not None: tot_cash+=c_val
         allow_m=bool(a.get('allow_margin')) if 'allow_margin' in a else (bucket not in {'tfsa','rrsp','fhsa'})
-        accts.append(AccountRecord(account=name, tax_bucket=bucket, nav=dec(a['nav']), cash=c_val, allow_margin=allow_m, source=str(a.get('source') or '')))
+        bp_val=dec(a['buying_power']) if a.get('buying_power') not in (None,'') else None
+        accts.append(AccountRecord(account=name, tax_bucket=bucket, nav=dec(a['nav']), cash=c_val, allow_margin=allow_m, buying_power=bp_val, source=str(a.get('source') or '')))
     raw_pos=snap.get('positions')
     declared_cnt=snap.get('position_count')
     if raw_pos is not None and declared_cnt is not None and int(declared_cnt)>len(raw_pos):
@@ -503,8 +536,7 @@ def canonical_snapshot(portfolio_dict=None, tax_positions_fallback=None):
             market_value_base=val_b, underlying_price=und_px, underlying_currency=und_cur,
             fx_rate_to_base=fx_val, delta=d_val, source=str(p.get('source') or '')
         ))
-    sid_payload={'as_of':snap.get('as_of'),'nav':str(snap['nav']),'accts':[(a.account,str(a.nav),str(a.cash)) for a in accts],'pos':[(p.account,p.conid,str(p.quantity),str(p.market_value_base)) for p in pos_recs]}
-    sid=hashlib.sha256(json.dumps(sid_payload, sort_keys=True).encode('utf-8')).hexdigest()[:16]
+    sid=compute_snapshot_id(snap.get('as_of'), base_cur, accts, pos_recs)
     return PortfolioSnapshot(
         snapshot_id=sid,
         as_of=snap.get('as_of'),

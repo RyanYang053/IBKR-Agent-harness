@@ -213,7 +213,7 @@ def _cache_bars(symbol, rows, provider, adj_basis='split_and_dividend_adj'):
         schema(c)
         for row in rows:
             cl=str(row['close'])
-            op=str(row.get('open') if row.get('open') is not None else cl)
+            op=str(row['open']) if row.get('open') not in (None,'') else None
             c.execute('INSERT OR REPLACE INTO bars(symbol,timeframe,ts,close,currency,provider,freshness,open_px,adj_basis) VALUES(?,?,?,?,?,?,?,?,?)',(symbol,'1Day',row['ts'],cl,row.get('currency') or 'USD',provider,'historical',op,adj_basis))
         last=c.execute('SELECT ts FROM bars WHERE symbol=? AND timeframe=? ORDER BY ts DESC LIMIT 1',(symbol,'1Day')).fetchone()
     return last['ts'] if last else None
@@ -235,7 +235,7 @@ def sync_bars(symbol, start=None):
                 if page_token: q['page_token']=page_token
                 payload=_request('https://data.alpaca.markets/v2/stocks/bars?'+urllib.parse.urlencode(q), headers, 'alpaca', 0.35)
                 raw_bars=((payload.get('bars') or {}).get(symbol) or [])
-                all_saved.extend({'ts':row['t'][:10],'open':str(row.get('o',row['c'])),'close':str(row['c'])} for row in raw_bars if row.get('c') is not None and row.get('t'))
+                all_saved.extend({'ts':row['t'][:10],'open':str(row['o']) if row.get('o') is not None else None,'close':str(row['c'])} for row in raw_bars if row.get('c') is not None and row.get('t'))
                 page_token=payload.get('next_page_token')
                 if not page_token: break
             if need_full_backfill and all_saved:
@@ -256,9 +256,9 @@ def sync_bars(symbol, start=None):
         has_open='Open' in frame
         cur_code=str(getattr(frame,'currency',None) or 'USD')
         for index, close_val in frame['Close'].dropna().items():
-            open_val=frame['Open'].get(index, close_val) if has_open else close_val
-            if open_val!=open_val: open_val=close_val
-            saved.append({'ts':index.date().isoformat(),'open':str(round(Decimal(str(open_val)),6)),'close':str(round(Decimal(str(close_val)),6)),'currency':cur_code})
+            open_val=frame['Open'].get(index, None) if has_open else None
+            op_str=str(round(Decimal(str(open_val)),6)) if (open_val is not None and open_val==open_val) else None
+            saved.append({'ts':index.date().isoformat(),'open':op_str,'close':str(round(Decimal(str(close_val)),6)),'currency':cur_code})
     if need_full_backfill and saved:
         with db('market') as c:
             schema(c); c.execute('DELETE FROM bars WHERE symbol=? AND timeframe=?',(symbol,'1Day'))
@@ -270,7 +270,7 @@ def bars(symbol, limit=120):
     with db('market') as c:
         schema(c)
         rows=c.execute('SELECT ts,open_px,close,currency,provider,freshness,adj_basis FROM bars WHERE symbol=? AND timeframe=? ORDER BY ts DESC LIMIT ?',(symbol,'1Day',max(1,min(int(limit),10000)))).fetchall()
-    return [{'symbol':symbol,'date':row['ts'],'open':row['open_px'] or row['close'],'close':row['close'],'currency':row['currency'],'provider':row['provider'],'freshness':'historical','adj_basis':row['adj_basis'] or 'unadjusted_legacy'} for row in reversed(rows)]
+    return [{'symbol':symbol,'date':row['ts'],'open':row['open_px'],'close':row['close'],'currency':row['currency'],'provider':row['provider'],'freshness':'historical','adj_basis':row['adj_basis'] or 'unadjusted_legacy'} for row in reversed(rows)]
 
 def sync_news(symbol):
     token=_env('finnhub_key_env')
@@ -373,12 +373,17 @@ EDGAR_CONCEPTS=(
     'OperatingIncomeLoss','NetIncomeLoss','EarningsPerShareDiluted',
     'NetCashProvidedByUsedInOperatingActivities','PaymentsToAcquirePropertyPlantAndEquipment',
     'CashAndCashEquivalentsAtCarryingValue','LongTermDebt','LongTermDebtNoncurrent','ShortTermBorrowings',
+    'StockholdersEquity','StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest',
     'WeightedAverageNumberOfDilutedSharesOutstanding','CommonStockSharesOutstanding'
 )
 
 def _upsert_pit_vintage(c, sym, per, stmt_type, std_concept, val, unit_name, f_dt, ev_id):
     rows=c.execute('SELECT revision_seq, value, filed_at FROM financial_statements_pit WHERE symbol=? AND period=? AND concept=? ORDER BY revision_seq DESC',(sym,per,std_concept)).fetchall()
     if any(r['filed_at']==f_dt and abs(float(r['value'])-float(val))<1e-6 for r in rows):
+        return 0
+    # Same filing date and a different value is an alias collision (for example total
+    # Revenues versus contract revenue), not a restatement. Keep the earlier concept.
+    if any(r['filed_at']==f_dt and abs(float(r['value'])-float(val))>=1e-6 for r in rows):
         return 0
     if rows and abs(float(rows[0]['value'])-float(val))<1e-6 and f_dt>=rows[0]['filed_at']:
         return 0
@@ -397,9 +402,12 @@ def _normalize_sec_xbrl_facts(symbol, cik, facts):
         'OperatingIncomeLoss':('IS','OperatingIncome'),'NetIncomeLoss':('IS','NetIncome'),'EarningsPerShareDiluted':('IS','EPSDiluted'),
         'NetCashProvidedByUsedInOperatingActivities':('CF','OperatingCashFlow'),'PaymentsToAcquirePropertyPlantAndEquipment':('CF','CapEx'),
         'CashAndCashEquivalentsAtCarryingValue':('BS','Cash'),'LongTermDebt':('BS','TotalDebt'),'LongTermDebtNoncurrent':('BS','TotalDebt'),
-        'ShortTermBorrowings':('BS','ShortTermDebt'),'WeightedAverageNumberOfDilutedSharesOutstanding':('IS','DilutedShares'),'CommonStockSharesOutstanding':('BS','SharesOutstanding')
+        'ShortTermBorrowings':('BS','ShortTermDebt'),'StockholdersEquity':('BS','ShareholdersEquity'),
+        'StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest':('BS','ShareholdersEquity'),
+        'WeightedAverageNumberOfDilutedSharesOutstanding':('IS','DilutedShares'),'CommonStockSharesOutstanding':('BS','SharesOutstanding')
     }
-    ev=record_evidence(sym, 'xbrl_companyfacts', 'sec_edgar', f'{sym} SEC XBRL CompanyFacts', f'CIK {cik}', url=f'https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json', cik=str(cik), filed_at=stamp[:10], available_at=stamp[:10])
+    raw_sha=hashlib.sha256(json.dumps(facts, sort_keys=True).encode('utf-8')).hexdigest()[:24]
+    ev=record_evidence(sym, 'xbrl_companyfacts', 'sec_edgar', f'{sym} SEC XBRL CompanyFacts', f'CIK {cik} sha={raw_sha}', url=f'https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json', cik=str(cik), filed_at=stamp[:10], available_at=stamp[:10])
     with db('market') as c:
         schema(c)
         for concept in EDGAR_CONCEPTS:
@@ -420,12 +428,24 @@ def _normalize_sec_xbrl_facts(symbol, cik, facts):
                 c.execute('INSERT OR REPLACE INTO filings VALUES(?,?,?,?,?,?,?)',(sym,concept,end,str(item.get('val')),item.get('form'),'sec_edgar',stamp))
                 saved+=1
 
-            # Group all vintages by fiscal year (fy) and duration (standalone quarter vs YTD vs FY)
+            # Group all vintages by actual fiscal year (distinguishing comparative prior-year rows with same fy/fp)
+            max_end_by_fy_fp={}
+            for row in entries:
+                if row.get('val') is None or not row.get('end'): continue
+                k=(str(row.get('fy') or row['end'][:4]), str(row.get('fp') or ''))
+                if k not in max_end_by_fy_fp or row['end']>max_end_by_fy_fp[k]:
+                    max_end_by_fy_fp[k]=row['end']
             by_fy={}
             for row in entries:
                 if row.get('val') is None or not row.get('end'): continue
-                fy=str(row.get('fy') or row['end'][:4])
+                base_fy=int(row.get('fy') or row['end'][:4])
                 fp=str(row.get('fp') or '')
+                max_e=max_end_by_fy_fp.get((str(base_fy), fp), row['end'])
+                try:
+                    yr_shift=round((datetime.strptime(max_e[:10],'%Y-%m-%d').date()-datetime.strptime(row['end'][:10],'%Y-%m-%d').date()).days/365.25)
+                except Exception:
+                    yr_shift=0
+                fy=str(base_fy-yr_shift)
                 f_dt=str(row.get('filed') or row['end'])
                 val=float(row['val'])
                 if stmt_type=='BS' or not row.get('start'):
@@ -455,18 +475,23 @@ def _normalize_sec_xbrl_facts(symbol, cik, facts):
                 for f_dt, val in sorted(by_fy.get(('fy', fy), []), key=lambda x:x[0]):
                     pit_saved+=_upsert_pit_vintage(c, sym, f'FY{fy}', stmt_type, std_concept, val, unit_name, f_dt, ev['evidence_id'])
                 # Standalone Q1-Q4 or YTD-differenced Q2, Q3, Q4
-                q_vals={}
+                q_vals={}; q_earliest={}
                 for qp in ('Q1','Q2','Q3','Q4'):
                     q_list=sorted(by_fy.get(('q', fy, qp), []), key=lambda x:x[0])
                     for f_dt, val in q_list:
                         pit_saved+=_upsert_pit_vintage(c, sym, f'{fy}{qp}', stmt_type, std_concept, val, unit_name, f_dt, ev['evidence_id'])
                         q_vals[qp]=(f_dt, val)
+                        if qp not in q_earliest: q_earliest[qp]=(f_dt, val)
+                if std_concept in {'EPSDiluted','DilutedShares'}:
+                    continue
                 h1_list=sorted(by_fy.get(('h1', fy), []), key=lambda x:x[0])
-                if 'Q2' not in q_vals and 'Q1' in q_vals and h1_list:
-                    f_dt, h1_v = h1_list[-1]
-                    q2_v=h1_v-q_vals['Q1'][1]
-                    pit_saved+=_upsert_pit_vintage(c, sym, f'{fy}Q2', stmt_type, std_concept, q2_v, unit_name, max(f_dt, q_vals['Q1'][0]), ev['evidence_id'])
-                    q_vals['Q2']=(max(f_dt, q_vals['Q1'][0]), q2_v)
+                if 'Q2' not in q_vals and 'Q1' in q_earliest and h1_list:
+                    f_dt, h1_v = h1_list[0]
+                    q1_dt, q1_v = q_earliest['Q1']
+                    q2_v=h1_v-q1_v
+                    q2_dt=max(f_dt, q1_dt)
+                    pit_saved+=_upsert_pit_vintage(c, sym, f'{fy}Q2', stmt_type, std_concept, q2_v, unit_name, q2_dt, ev['evidence_id'])
+                    q_vals['Q2']=(q2_dt, q2_v); q_earliest['Q2']=(q2_dt, q2_v)
                 ytd9_list=sorted(by_fy.get(('ytd9', fy), []), key=lambda x:x[0])
                 if 'Q3' not in q_vals and ytd9_list:
                     f_dt, y9_v = ytd9_list[-1]
@@ -815,12 +840,16 @@ def fetch_public_url(url, max_chars=4500):
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             _assert_public_http_url(newurl)
             return super().redirect_request(req, fp, code, msg, headers, newurl)
-    opener=urllib.request.build_opener(NoCrossHostRedirect)
+    opener=urllib.request.build_opener(urllib.request.ProxyHandler({}), NoCrossHostRedirect)
     req=urllib.request.Request(clean_url, headers={'User-Agent':'Mozilla/5.0 (compatible; PersonalInvestmentResearch/0.1)'})
     try:
         with opener.open(req, timeout=20) as resp:
             ctype=(resp.headers.get('Content-Type') or '').lower()
-            raw=resp.read(400000).decode('utf-8','ignore')
+            raw_bytes=resp.read(400001)
+            if len(raw_bytes)>400000: raise ValueError('response_exceeds_size_limit')
+            raw=raw_bytes.decode('utf-8','ignore')
+    except ValueError:
+        raise
     except Exception as exc:
         return {'url':clean_url,'status':'error','error':type(exc).__name__,'untrusted':True}
     if 'html' in ctype or '<html' in raw[:500].lower():
@@ -903,21 +932,21 @@ def record_financial_fact(symbol, period, statement_type, concept, value, filed_
     return {'symbol':sym,'period':per,'concept':concept,'value':val,'revision_seq':seq,'available_at':av_ts}
 
 def get_facts_pit(symbol, as_of='', period=''):
-    """Query Point-in-Time financial facts available on or before as_of, selecting the latest revision_seq eligible at that cutoff."""
+    """Query Point-in-Time financial facts available on or before as_of, ordered by publication time (available_at, filed_at, revision_seq)."""
     sym=str(symbol or '').strip().upper()
     cutoff=str(as_of or datetime.now(timezone.utc).isoformat())
     with db('market') as c:
         schema(c)
-        q='''SELECT f.* FROM financial_statements_pit f
-            INNER JOIN (
-                SELECT symbol, period, concept, MAX(revision_seq) AS max_seq
-                FROM financial_statements_pit
-                WHERE symbol=? AND available_at<=?'''+(' AND period=?' if period else '')+'''
-                GROUP BY symbol, period, concept
-            ) m ON f.symbol=m.symbol AND f.period=m.period AND f.concept=m.concept AND f.revision_seq=m.max_seq
-            ORDER BY f.period DESC, f.concept ASC'''
+        q='''SELECT * FROM financial_statements_pit
+            WHERE symbol=? AND available_at<=?'''+(' AND period=?' if period else '')+'''
+            ORDER BY period DESC, concept ASC, available_at DESC, filed_at DESC, revision_seq DESC'''
         params=(sym,cutoff,period.upper()) if period else (sym,cutoff)
-        rows=[dict(r) for r in c.execute(q, params)]
+        all_rows=[dict(r) for r in c.execute(q, params)]
+    seen=set(); rows=[]
+    for r in all_rows:
+        key=(r['period'], r['concept'])
+        if key in seen: continue
+        seen.add(key); rows.append(r)
     return {'symbol':sym,'as_of':cutoff,'facts':rows,'count':len(rows)}
 
 def compute_ttm_and_ratios(symbol, as_of=''):
@@ -931,6 +960,10 @@ def compute_ttm_and_ratios(symbol, as_of=''):
     q_periods=sorted(q_by_per.keys(), reverse=True)[:4]
     if len(q_periods)<4:
         return {'symbol':pit['symbol'],'as_of':pit['as_of'],'status':'insufficient_quarters_for_ttm','quarters_found':len(q_periods)}
+    def _q_idx(qp):
+        return int(qp[:4])*4 + int(qp[-1])
+    if [_q_idx(q_periods[i])-_q_idx(q_periods[i+1]) for i in range(3)]!=[1,1,1]:
+        return {'symbol':pit['symbol'],'as_of':pit['as_of'],'status':'non_contiguous_quarters_for_ttm','quarters_found':q_periods}
     def _sum_q(concept):
         vals=[q_by_per[p].get(concept) for p in q_periods]
         return sum(vals) if all(v is not None for v in vals) else None
@@ -965,15 +998,15 @@ def generate_quality_features(symbol, as_of=''):
     fys=sorted(by_fy.keys(), reverse=True)
     ttm=compute_ttm_and_ratios(sym, as_of=as_of)
     roic=(ttm.get('ratios') or {}).get('roic_pre_tax_approx')
-    fcf_g=0.0; dil=0.0
+    fcf_g=None; dil=None
     if len(fys)>=2:
         c0=by_fy[fys[0]]; c1=by_fy[fys[1]]
         fcf0=(c0.get('OperatingCashFlow',0)-abs(c0.get('CapEx',0))) if ('OperatingCashFlow' in c0 and 'CapEx' in c0) else None
         fcf1=(c1.get('OperatingCashFlow',0)-abs(c1.get('CapEx',0))) if ('OperatingCashFlow' in c1 and 'CapEx' in c1) else None
-        if fcf0 is not None and fcf1 and abs(fcf1)>1e-6: fcf_g=(fcf0-fcf1)/abs(fcf1)
-        sh0=c0.get('DilutedShares') or c0.get('SharesOutstanding')
-        sh1=c1.get('DilutedShares') or c1.get('SharesOutstanding')
-        if sh0 and sh1 and sh1>0: dil=(sh0-sh1)/sh1
+        if fcf0 is not None and fcf1 is not None and abs(fcf1)>1e-6: fcf_g=(fcf0-fcf1)/abs(fcf1)
+        sh0=c0.get('DilutedShares') if c0.get('DilutedShares') is not None else c0.get('SharesOutstanding')
+        sh1=c1.get('DilutedShares') if c1.get('DilutedShares') is not None else c1.get('SharesOutstanding')
+        if sh0 is not None and sh1 is not None and sh1>0: dil=(sh0-sh1)/sh1
         if roic is None and c0.get('OperatingIncome') is not None:
             ic=(c0.get('TotalDebt',0)+c0.get('ShareholdersEquity',0)-c0.get('Cash',0))
             if ic>0: roic=(c0['OperatingIncome']*0.79)/ic
@@ -981,6 +1014,6 @@ def generate_quality_features(symbol, as_of=''):
     rev_ttm=(ttm.get('ttm_metrics') or {}).get('revenue')
     op_m=(ttm.get('ratios') or {}).get('operating_margin')
     latest_fy=by_fy[fys[0]] if fys else {}
-    net_debt=(latest_fy.get('TotalDebt',0)-latest_fy.get('Cash',0)) if ('TotalDebt' in latest_fy or 'Cash' in latest_fy) else 0.0
+    net_debt=(latest_fy['TotalDebt']-latest_fy['Cash']) if ('TotalDebt' in latest_fy and 'Cash' in latest_fy) else None
     shares=latest_fy.get('DilutedShares') or latest_fy.get('SharesOutstanding')
-    return {'roic':round(float(roic),4),'fcf_growth':round(float(fcf_g),4),'dilution_rate':round(float(dil),4),'valuation_discount_pct':None,'revenue_ttm':rev_ttm,'operating_margin':op_m,'net_debt':net_debt,'shares':shares,'source':'pit_financial_statements'}
+    return {'roic':round(float(roic),4),'fcf_growth':None if fcf_g is None else round(float(fcf_g),4),'dilution_rate':None if dil is None else round(float(dil),4),'valuation_discount_pct':None,'revenue_ttm':rev_ttm,'operating_margin':op_m,'net_debt':net_debt,'shares':shares,'source':'pit_financial_statements'}

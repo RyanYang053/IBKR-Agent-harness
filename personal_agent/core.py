@@ -4,10 +4,31 @@ from pathlib import Path
 from contextlib import contextmanager
 from datetime import datetime, timezone
 ROOT = Path(__file__).resolve().parents[1]
-HOME = Path(os.environ.get('PERSONAL_AGENT_HOME', ROOT/'local')).expanduser().resolve()
-CONFIG = Path(os.environ.get('PERSONAL_AGENT_CONFIG', ROOT/'config/personal.json')).expanduser().resolve()
+
+def _home_path():
+    return Path(os.environ.get('PERSONAL_AGENT_HOME', ROOT/'local')).expanduser().resolve()
+
+def _config_path():
+    return Path(os.environ.get('PERSONAL_AGENT_CONFIG', ROOT/'config/personal.json')).expanduser().resolve()
+
+def home():
+    """Live PERSONAL_AGENT_HOME path (honors env changes after import)."""
+    return _home_path()
+
+def config_path():
+    """Live PERSONAL_AGENT_CONFIG path (honors env changes after import)."""
+    return _config_path()
+
+def __getattr__(name):
+    # Keep `from personal_agent.core import HOME, CONFIG` working with live env resolution.
+    if name == 'HOME':
+        return _home_path()
+    if name == 'CONFIG':
+        return _config_path()
+    raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
+
 def config():
-    return json.loads(CONFIG.read_text(encoding='utf-8'))
+    return json.loads(_config_path().read_text(encoding='utf-8'))
 def operator_env(name):
     if not name: return ''
     val=os.environ.get(name,'').strip()
@@ -27,7 +48,9 @@ def private_dir(path):
 @contextmanager
 def db(domain):
     if domain not in {'knowledge','finance','market','ops'}: raise ValueError('invalid domain')
-    p=private_dir(HOME)/f'{domain}.sqlite3'
+    if os.environ.get('INVESTMENT_OS_PUBLIC_ONLY')=='1' and domain in {'finance','knowledge','ops'}:
+        raise PermissionError(f'public-only process is forbidden from opening {domain}.sqlite3')
+    p=private_dir(_home_path())/f'{domain}.sqlite3'
     c=sqlite3.connect(p, timeout=15)
     c.row_factory=sqlite3.Row
     try:
@@ -51,10 +74,11 @@ def read_text(path):
 def backup_databases(dest_dir=None):
     """Online WAL-safe SQLite snapshot backup via sqlite3.Connection.backup() with PRAGMA integrity_check verification."""
     stamp=datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')
-    target_root=private_dir(Path(dest_dir) if dest_dir else (private_dir(HOME)/'backups'/stamp))
+    home=_home_path()
+    target_root=private_dir(Path(dest_dir) if dest_dir else (private_dir(home)/'backups'/stamp))
     backed_up=[]
     for domain in ('finance','market','knowledge','ops'):
-        src_path=HOME/f'{domain}.sqlite3'
+        src_path=home/f'{domain}.sqlite3'
         if not src_path.exists(): continue
         dst_path=target_root/f'{domain}.sqlite3'
         src=sqlite3.connect(src_path, timeout=15)

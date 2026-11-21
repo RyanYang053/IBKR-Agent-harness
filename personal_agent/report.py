@@ -3,7 +3,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 import json
 from pathlib import Path
-from .core import HOME, private_dir
+from .core import home, private_dir
 from . import market
 from .decision import exposure, improvement_loop, risk, tax_positions
 from .finance import dec, performance, portfolio
@@ -59,7 +59,7 @@ def daily_report():
 
 def write_report():
     body=daily_report()
-    folder=private_dir(Path(HOME)/'reports')
+    folder=private_dir(Path(home())/'reports')
     stamp=body.get('as_of') or 'blocked'
     path=folder/(stamp+'.json')
     path.write_text(json.dumps(body,ensure_ascii=False,indent=2),encoding='utf-8')

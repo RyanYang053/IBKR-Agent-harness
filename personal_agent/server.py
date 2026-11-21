@@ -1,9 +1,13 @@
 """Separate stdio MCP process for each domain. Do not expose a universal shell/SQL tool."""
-import argparse
+import argparse, os
 from mcp.server.fastmcp import FastMCP
 from . import broker, decision, finance, knowledge, market, ops, quant, report
 
 def make_server(domain, public_only=False):
+    if domain=='knowledge' and public_only:
+        raise ValueError('knowledge domain is private-only and cannot run with --public-only')
+    if public_only:
+        os.environ['INVESTMENT_OS_PUBLIC_ONLY']='1'
     surface=domain+('-public' if public_only else '')
     m=FastMCP('personal-'+surface)
     def tool():
