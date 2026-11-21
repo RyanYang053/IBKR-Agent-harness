@@ -88,38 +88,58 @@ def main():
     steps.append(run_command(root, out, 'independent_scenarios',
                              [py, '-m', 'pytest', str(suite.relative_to(root)), '-vv', '-ra',
                               '-p', 'no:cacheprovider', f'--junitxml={junit}'], args.timeout))
+    workflow = root / 'tests/independent/test_offline_workflows.py'
+    wf_junit = out / 'workflows.xml'
+    if workflow.exists():
+        steps.append(run_command(root, out, 'offline_workflows',
+                                 [py, '-m', 'pytest', str(workflow.relative_to(root)), '-vv', '-ra',
+                                  '-p', 'no:cacheprovider', f'--junitxml={wf_junit}'], args.timeout))
     stats = parse_junit(junit)
+    wf_stats = parse_junit(wf_junit) if workflow.exists() else {'total': 0, 'passed': 0, 'failed': 0, 'skipped': 0, 'errors': 0, 'cases': []}
     try:
         head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
     except (OSError, subprocess.CalledProcessError):
         head = None
     expected_ids = [f'test_R{i:02d}_' for i in range(1, 33)]
     missing = [x for x in expected_ids if not any(c['id'].startswith(x) for c in stats['cases'])]
+    wf_ok = (wf_stats['total'] >= 7 and wf_stats['failed'] == wf_stats['errors'] == wf_stats['skipped'] == 0)
     is_ok = (all(s['status'] == 'PASS' for s in steps)
              and stats['total'] >= 32 and stats['failed'] == stats['errors'] == stats['skipped'] == 0
-             and not missing)
+             and not missing and wf_ok)
     report = {
         'schema': 'independent_real_scenarios.v1', 'repo_sha': head,
         'result': 'SCENARIO_VERIFIED' if is_ok else 'BLOCKED',
         'offline_only': True, 'live_verified': False, 'production_accepted': False,
-        'steps': steps, 'independent_scenarios': stats, 'missing_scenarios': missing,
-        'source_suites': ['existing tests/acceptance', 'tests/independent/test_real_scenarios.py'],
+        'steps': steps, 'independent_scenarios': stats, 'offline_workflows': wf_stats,
+        'missing_scenarios': missing,
+        'source_suites': ['existing tests/acceptance', 'tests/independent/test_real_scenarios.py',
+                          'tests/independent/test_offline_workflows.py'],
+        'unresolved_blockers': [
+            {'id': 'G2_LIVE_IBKR', 'status': 'BLOCKED_EXTERNAL',
+             'reason': 'Real IBKR Gateway/TWS read-only connectivity must be run on the operator machine.'},
+            {'id': 'G3_SHADOW_20', 'status': 'BLOCKED_EXTERNAL',
+             'reason': '20 trading-session Shadow Mode has no operator session evidence.'},
+        ],
         'limitations': [
             'No authenticated TWS/IBKR connection is made.',
             'Synthetic fixtures validate logic, not entitlement or real-market correctness.',
-            'Testing all 52 acceptance IDs semantically is a separate reviewer requirement.',
             'A green run is not evidence of alpha or successful trading.',
         ],
     }
     (out/'report.json').write_text(json.dumps(report, indent=2, ensure_ascii=False)+'\n', encoding='utf-8')
     lines = [f"# Independent scenario QA — {report['result']}", '', f"Git SHA: `{head}`",
              f"Independent scenarios: {stats['passed']}/{stats['total']} passed; {stats['failed']} failed; {stats['errors']} errors; {stats['skipped']} skipped.",
+             f"Offline workflows: {wf_stats['passed']}/{wf_stats['total']} passed; {wf_stats['failed']} failed.",
              '', '| ID | Status | Summary |', '|---|---|---|']
     lines += [f"| {c['id']} | {c['status']} | {c['details'].replace('|', '/')} |" for c in stats['cases']]
+    lines += ['', '| Workflow | Status |', '|---|---|']
+    lines += [f"| {c['id']} | {c['status']} |" for c in wf_stats['cases']]
+    lines += ['', '## Unresolved blockers', '']
+    lines += [f"- `{b['id']}` ({b['status']}): {b['reason']}" for b in report['unresolved_blockers']]
     lines += ['', '## Commands', ''] + [f"- `{s['name']}`: {s['status']}, log `{s['log']}`" for s in steps]
     lines += ['', 'No live or production acceptance is claimed.']
     (out/'report.md').write_text('\n'.join(lines)+'\n', encoding='utf-8')
-    print(f"{report['result']}: {stats['passed']}/{stats['total']} real scenarios passed; report={out/'report.json'}")
+    print(f"{report['result']}: {stats['passed']}/{stats['total']} real scenarios + {wf_stats['passed']}/{wf_stats['total']} workflows; report={out/'report.json'}")
     return 0 if is_ok else 1
 
 

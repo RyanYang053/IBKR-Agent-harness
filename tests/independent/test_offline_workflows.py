@@ -270,11 +270,13 @@ def test_concurrent_approval_commits_one_journal(workspace):
     assert all(name in {"ValueError", "OperationalError"} for name in errors) or errors == []
 
 
-def _install_fake_tws(monkeypatch, *, partial=False, delta=0.5, usd_account=True):
+def _install_fake_tws(monkeypatch, *, partial=False, delta=0.5, usd_account=True,
+                      entitlement_denied=False, fail_connect_times=0, drop_after_connect=False):
     mod_cl = type(sys)("ibapi.client")
     mod_wr = type(sys)("ibapi.wrapper")
     mod_ct = type(sys)("ibapi.contract")
     mod_ib = type(sys)("ibapi")
+    state = {"connect_attempts": 0}
 
     class EWrapper:
         pass
@@ -295,8 +297,15 @@ def _install_fake_tws(monkeypatch, *, partial=False, delta=0.5, usd_account=True
             self.orders = []
 
         def connect(self, host, port, client_id):
+            state["connect_attempts"] += 1
+            if state["connect_attempts"] <= fail_connect_times:
+                self._conn = False
+                self._w.error(0, 502, "Couldn't connect to TWS")
+                return
             self._conn = True
             self._w.managedAccounts("U_E2E_M,U_E2E_T,U_E2E_R")
+            if drop_after_connect:
+                self._conn = False
 
         def isConnected(self):
             return self._conn
@@ -344,6 +353,9 @@ def _install_fake_tws(monkeypatch, *, partial=False, delta=0.5, usd_account=True
             return None
 
         def reqMktData(self, req_id, contract, generic, snapshot, regulatory, options):
+            if entitlement_denied:
+                self._w.error(req_id, 354, "Requested market data is not subscribed")
+                return
             self._w.tickPrice(req_id, 1, 1.0, None)
             self._w.tickPrice(req_id, 2, 1.2, None)
             self._w.tickOptionComputation(req_id, 13, 0, 0.2, delta, 1.1, 0.0, 0.01, 0.1, -0.01, 100.0)
@@ -365,6 +377,7 @@ def _install_fake_tws(monkeypatch, *, partial=False, delta=0.5, usd_account=True
     monkeypatch.setitem(sys.modules, "ibapi.client", mod_cl)
     monkeypatch.setitem(sys.modules, "ibapi.wrapper", mod_wr)
     monkeypatch.setitem(sys.modules, "ibapi.contract", mod_ct)
+    return state
 
 
 def test_broker_callbacks_freshness_and_risk_fingerprint(workspace, monkeypatch):
@@ -445,3 +458,115 @@ def test_shadow_and_live_gates_stay_external(workspace):
     assert shadow.returncode == 2
     body = json.loads(shadow.stdout)
     assert body["production_accepted"] is False and body["status"] != "ok"
+
+
+def test_broker_disconnect_retry_entitlement_and_stale_last_good(workspace, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    broker = workspace["broker"]
+    finance = workspace["finance"]
+    ops = workspace["ops"]
+    flex = workspace["root"] / "flex.xml"
+    _write_flex(flex)
+    assert _cli(workspace["env"], "import-flex", str(flex)).returncode == 0
+    base = finance.load_full_portfolio_snapshot()
+
+    state = _install_fake_tws(monkeypatch, fail_connect_times=1)
+    first = broker.sync_broker_live()
+    assert first.get("live_verified") is False
+    assert state["connect_attempts"] == 1
+    assert finance.decision_snapshot().snapshot_id == base.snapshot_id
+
+    _install_fake_tws(monkeypatch, fail_connect_times=0)
+    recovered = broker.sync_broker_live()
+    assert recovered["status"] == "ok" and recovered["live_verified"] is True and recovered["positions"] == 100
+    enriched = finance.decision_snapshot()
+    assert enriched.snapshot_id != base.snapshot_id
+    greeks = broker.broker_state_for_risk()["greeks"]
+    assert "9001" in greeks and greeks["9001"].get("delta") is not None
+
+    _install_fake_tws(monkeypatch, entitlement_denied=True)
+    denied = broker.sync_broker_live()
+    assert denied["live_verified"] is False and denied["status"] == "partial"
+    assert any("354" in str(x) for x in denied.get("incomplete_callbacks") or [])
+    assert finance.decision_snapshot().snapshot_id == base.snapshot_id
+
+    mid = (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat()
+    broker._persist_broker_snapshot(
+        "ibkr_tws_readonly", mid,
+        {"U_E2E_M": {"BuyingPower": "99999", "currency": "CAD"}},
+        [{"accountId": "U_E2E_M", "conid": "9001", "symbol": "QAOPT", "asset": "OPT",
+          "currency": "CAD", "position": "1", "multiplier": "100"}],
+        {"9001": {"delta": 0.9, "underlying_price": 100, "status": "live"}},
+        {"equities_live": True, "options_greeks_live": True},
+        capture_status="ok", live_verified=True,
+    )
+    mid_decision = finance.decision_snapshot(max_broker_age_seconds=300)
+    assert mid_decision.snapshot_id == base.snapshot_id
+    mid_reconcile = broker.reconcile_live_to_flex()
+    assert mid_reconcile["status"] != "reconciled"
+
+    ancient = (datetime.now(timezone.utc) - timedelta(hours=40)).isoformat()
+    broker._persist_broker_snapshot(
+        "ibkr_tws_readonly", ancient,
+        {"U_E2E_M": {"BuyingPower": "99999", "currency": "CAD"}},
+        [{"accountId": "U_E2E_M", "conid": "9001", "symbol": "QAOPT", "asset": "OPT",
+          "currency": "CAD", "position": "1", "multiplier": "100"}],
+        {"9001": {"delta": 0.9, "underlying_price": 100, "status": "live"}},
+        {"equities_live": True, "options_greeks_live": True},
+        capture_status="ok", live_verified=True,
+    )
+    stale_decision = finance.decision_snapshot(max_broker_age_seconds=300)
+    assert stale_decision.snapshot_id == base.snapshot_id
+    reconcile = broker.reconcile_live_to_flex()
+    assert reconcile["status"] == "stale_broker_snapshot"
+    shadow = ops.shadow_mode_check()
+    assert shadow["production_accepted"] is False
+    assert shadow["status"] == "blocked"
+    assert any(str(b).startswith("broker:") for b in shadow["readiness_blockers"])
+
+
+def test_sec_filings_to_committee_decision_chain(workspace):
+    market = workspace["market"]
+    decision = workspace["decision"]
+    ops = workspace["ops"]
+    flex = workspace["root"] / "flex.xml"
+    _write_flex(flex, include_option=False)
+    assert _cli(workspace["env"], "import-flex", str(flex)).returncode == 0
+
+    raw = (SEC_DIR / "WMT_companyfacts.json").read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == SEC_SHA256["WMT"]
+    with patch.object(market, "_cik", return_value=SEC_CIK["WMT"]), patch.object(market, "_request", return_value=json.loads(raw)):
+        synced = market.sync_filings("WMT")
+    assert synced["status"] == "ok" and synced["pit_facts"] > 0
+    ttm = market.compute_ttm_and_ratios("WMT", as_of="2026-03-20")
+    features = market.generate_quality_features("WMT", as_of="2026-03-20")
+    assert features is None or isinstance(features, dict)
+    missing = decision.discover_opportunities(
+        ["MISSINGDATA"],
+        features_by_symbol={"MISSINGDATA": {"roic": None, "fcf_growth": None, "dilution_rate": None}},
+    )
+    assert missing["status"] in {"ok", "insufficient_data", "no_compelling_opportunity"}
+    excluded = missing.get("excluded") or []
+    assert any(row.get("symbol") == "MISSINGDATA" for row in excluded) or missing["status"] != "ok"
+    assert not any(row.get("symbol") == "MISSINGDATA" and row.get("fcf_growth") == 0 for row in missing.get("candidates") or [])
+    if ttm.get("status") == "ok" and (ttm.get("ttm_metrics") or {}).get("revenue"):
+        rev = str(ttm["ttm_metrics"]["revenue"])
+    else:
+        rev = "713163000000"
+    wf = ops.run_workflow("investment_committee_memo", {
+        "symbol": "WMT", "action": "BUY", "amount_base": "100", "account": "margin",
+        "revenue_t0": rev, "shares": "1000",
+        "falsifier": "Operating cash flow declines for two consecutive reports",
+        "thesis": "Recorded SEC CompanyFacts offline committee case",
+        "research_complete": True,
+    })
+    assert wf["status"] == "awaiting_approval"
+    assert len(wf["completed_steps"]) >= 5
+    approved = ops.approve_workflow(wf["run_id"], "SEC chain human approval")
+    assert approved["status"] == "completed"
+    with workspace["core"].db("knowledge") as c:
+        journals = c.execute("SELECT COUNT(*) FROM memory WHERE approval_run_id=?", (wf["run_id"],)).fetchone()[0]
+    assert journals == 1
+    restarted = ops.get_workflow_run(wf["run_id"])
+    assert restarted["status"] == "completed"
