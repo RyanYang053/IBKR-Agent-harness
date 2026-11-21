@@ -251,12 +251,6 @@
       "status": "BLOCKED_EXTERNAL",
       "severity": "mandatory_for_production",
       "reason": "20 trading-session Shadow Mode has no operator session evidence."
-    },
-    {
-      "id": "LINUX_CI",
-      "status": "PENDING_CI",
-      "severity": "process",
-      "reason": "Ubuntu matrix job evidence will be produced by GitHub Actions after push; local run was Windows-only."
     }
   ],
   "numerical_oracles": {
@@ -275,5 +269,15 @@
       "expected": 0.0,
       "method": "external cash flow excluded from return"
     }
+  },
+  "ci": {
+    "status": "PASS",
+    "url": "https://github.com/RyanYang053/IBKR-Agent-harness/actions/runs/44936395581",
+    "jobs": [
+      "independent-scenarios (ubuntu-latest)",
+      "independent-scenarios (windows-latest)",
+      "offline-gate (ubuntu-latest)",
+      "offline-gate (windows-latest)"
+    ]
   }
 }

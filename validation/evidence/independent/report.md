@@ -51,6 +51,10 @@ Offline workflows: 7 PASS (Flex->risk->trade->policy; SEC->PIT->TTM->valuation->
 - WMT CompanyFacts SHA-256 `49330f98609f70fcef4054edc90bc811398a58c4bf26dc0b218d607967a8dbe4`
 - Broker: Fake TWS callback transport via IBKRTWSAdapter / sync_broker_replay; no live socket
 
+## CI
+
+- Dual-OS Actions run PASS: https://github.com/RyanYang053/IBKR-Agent-harness/actions/runs/44936395581
+
 ## Commands
 
 - `baseline`: PASS, log `validation\evidence\independent\baseline.log`
