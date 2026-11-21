@@ -1,6 +1,6 @@
 {
   "schema": "independent_real_scenarios.v1",
-  "repo_sha": "740186956880ac74f03ccdcd912f0997cc586d99",
+  "repo_sha": "c72caab1bb469e7bc05c8f077ca154832bfdb61b",
   "result": "SCENARIO_VERIFIED",
   "offline_only": true,
   "live_verified": false,
@@ -10,17 +10,17 @@
       "name": "baseline",
       "status": "PASS",
       "exit_code": 0,
-      "started_at": "2026-11-21T18:43:27.057694+00:00",
-      "finished_at": "2026-11-21T18:43:38.822966+00:00",
+      "started_at": "2026-11-21T18:50:56.618019+00:00",
+      "finished_at": "2026-11-21T18:51:08.614923+00:00",
       "log": "validation\\evidence\\independent\\baseline.log",
-      "sha256": "cca8727c2d9d45d8e7b412c874561c006624aafde74747793c821602e9d21004"
+      "sha256": "6b205f78a2e5d74665ded44de7fcde972bc2f48b40fca47c08237e35b8917061"
     },
     {
       "name": "original_contract",
       "status": "PASS",
       "exit_code": 0,
-      "started_at": "2026-11-21T18:43:38.823316+00:00",
-      "finished_at": "2026-11-21T18:44:15.323112+00:00",
+      "started_at": "2026-11-21T18:51:08.615191+00:00",
+      "finished_at": "2026-11-21T18:51:44.217517+00:00",
       "log": "validation\\evidence\\independent\\original_contract.log",
       "sha256": "2e9aa16645a0ddba7de5aa53c59397140bfcda122181923051ec276ed62d2c2c"
     },
@@ -28,19 +28,19 @@
       "name": "independent_scenarios",
       "status": "PASS",
       "exit_code": 0,
-      "started_at": "2026-11-21T18:44:15.323419+00:00",
-      "finished_at": "2026-11-21T18:44:18.973456+00:00",
+      "started_at": "2026-11-21T18:51:44.217997+00:00",
+      "finished_at": "2026-11-21T18:51:47.708419+00:00",
       "log": "validation\\evidence\\independent\\independent_scenarios.log",
-      "sha256": "2f660ff9101a892db70706482d9e9c605300b6b8873cb10e5645fd7114738c9c"
+      "sha256": "d633043389a1766efab7f27d3c903ea6dadce5146e1dc878f27def476576b5a2"
     },
     {
       "name": "offline_workflows",
       "status": "PASS",
       "exit_code": 0,
-      "started_at": "2026-11-21T18:44:18.973880+00:00",
-      "finished_at": "2026-11-21T18:44:43.175050+00:00",
+      "started_at": "2026-11-21T18:51:47.708772+00:00",
+      "finished_at": "2026-11-21T18:52:13.384340+00:00",
       "log": "validation\\evidence\\independent\\offline_workflows.log",
-      "sha256": "1ebc21e5dab97723c7e9b86f74bc645d36978eb84ae31118a5578ecd029e3cf1"
+      "sha256": "a72f7f5463a1089022c7a14a60ea0a7add52453ea564008a3e70b4a2f64929e1"
     }
   ],
   "independent_scenarios": {

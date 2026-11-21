@@ -17,4 +17,4 @@ tests/independent/test_offline_workflows.py::test_broker_disconnect_retry_entitl
 tests/independent/test_offline_workflows.py::test_sec_filings_to_committee_decision_chain PASSED [100%]
 
 - generated xml file: C:\Users\yang0\Personal Agent Framework\validation\evidence\independent\workflows.xml -
-============================= 9 passed in 23.68s ==============================
+============================= 9 passed in 25.06s ==============================
