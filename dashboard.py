@@ -185,7 +185,15 @@ with cat_tab:
         with ex2:
             ar_in=st.text_input('Actual Revenue (post-release)', ''); ae_in=st.text_input('Actual EPS (post-release)', '')
         if st.button('Save / Evaluate Earnings Expectation Gap') and e_sym.strip():
-            st.json(record_earnings_expectation(e_sym, e_per, e_basis, er_in or None, ee_in or None, act_revenue=ar_in or None, act_eps=ae_in or None))
+            has_exp=bool((er_in or '').strip() or (ee_in or '').strip())
+            has_act=bool((ar_in or '').strip() or (ae_in or '').strip())
+            if has_exp and has_act:
+                st.error('Record the pre-release expectation first. Actual results cannot be saved in the same step as the forecast.')
+            else:
+                try:
+                    st.json(record_earnings_expectation(e_sym, e_per, e_basis, er_in or None, ee_in or None, act_revenue=ar_in or None, act_eps=ae_in or None))
+                except ValueError as exc:
+                    st.error(str(exc))
         ev_head=st.text_input('Headline for L0-L4 Materiality Triage', '')
         if st.button('Classify Event Impact Tier') and e_sym.strip() and ev_head.strip():
             st.json(triage_catalyst_event(e_sym, ev_head))

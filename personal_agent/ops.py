@@ -777,12 +777,37 @@ def list_eval_runs(limit=10):
     return out
 
 def record_scheduled_job(job_name, schedule_window, status, summary=None):
-    """v0.6.0 A03: Persist scheduled job execution state for Task Scheduler / CLI."""
+    """Persist scheduled job state. A later run of the same window after an error increments retry_count."""
     jid=f'{job_name}:{schedule_window}'
+    payload=dict(summary or {})
     with db('ops') as c:
         schema(c)
-        c.execute('INSERT OR REPLACE INTO scheduled_jobs VALUES(?,?,?,?,?,?)',(jid,str(job_name),str(schedule_window),str(status),json.dumps(summary or {},ensure_ascii=False,default=str),now()))
-    return {'job_id':jid,'status':status}
+        prev=c.execute('SELECT status, summary_json FROM scheduled_jobs WHERE job_id=?',(jid,)).fetchone()
+        retries=0
+        if prev:
+            try: retries=int(json.loads(prev['summary_json'] or '{}').get('retry_count') or 0)
+            except (TypeError, ValueError, json.JSONDecodeError): retries=0
+            if prev['status']=='error': retries+=1
+        payload['retry_count']=retries
+        c.execute('INSERT OR REPLACE INTO scheduled_jobs VALUES(?,?,?,?,?,?)',(jid,str(job_name),str(schedule_window),str(status),json.dumps(payload,ensure_ascii=False,default=str),now()))
+    return {'job_id':jid,'status':status,'retry_count':retries}
+
+def run_daily_monitoring():
+    """Run discovery and the policy audit, emit deduplicated alerts, and record failure for a later retry."""
+    window=now()[:10]
+    try:
+        disc=decision.discover_opportunities()
+        pol=quant.evaluate_policy(mode='AUDIT')
+        emitted=[]
+        for b in (pol.get('hard_blocks') or []):
+            emitted.append(emit_alert(f"policy:{b['rule']}", b.get('symbol',''), 'high', f"IPS Hard Block: {b['rule']}", str(b.get('detail') or b)))
+        for cnd in (disc.get('candidates') or []):
+            emitted.append(emit_alert(f"opp:{cnd['symbol']}", cnd['symbol'], 'info', f"Opportunity Candidate: {cnd['symbol']}", f"score={cnd['composite_score']} roic={cnd['roic']} disc={cnd['valuation_discount_pct']}"))
+        rec=record_scheduled_job('daily_monitoring', window, 'ok', {'candidates':len(disc.get('candidates') or []),'alerts':len(emitted),'discovery_status':disc.get('status')})
+        return {'status':'ok','discovery_status':disc.get('status'),'alerts_processed':len(emitted),'retry_count':rec['retry_count'],'orders':'disabled'}
+    except Exception as exc:
+        rec=record_scheduled_job('daily_monitoring', window, 'error', {'error':type(exc).__name__,'message':str(exc)[:300]})
+        return {'status':'error','error':type(exc).__name__,'message':str(exc)[:300],'retry_count':rec['retry_count'],'orders':'disabled'}
 
 def emit_alert(dedup_key, symbol, severity, title, detail, evidence_ids=None):
     """v0.6.0 A03: Deduplicated local alert emission with hit_count tracking."""
@@ -849,15 +874,3 @@ def shadow_mode_check():
         'orders':'disabled',
         'limitations':['20-day live shadow-mode window and real IBKR TWS socket permissions must be validated on the operator host before production acceptance.']
     }
-
-def run_daily_monitoring():
-    """v0.6.0 A03: Run deterministic opportunity discovery + policy audit and emit deduplicated alerts."""
-    disc=decision.discover_opportunities()
-    pol=quant.evaluate_policy(mode='AUDIT')
-    emitted=[]
-    for b in (pol.get('hard_blocks') or []):
-        emitted.append(emit_alert(f"policy:{b['rule']}", b.get('symbol',''), 'high', f"IPS Hard Block: {b['rule']}", str(b.get('detail') or b)))
-    for c in (disc.get('candidates') or []):
-        emitted.append(emit_alert(f"opp:{c['symbol']}", c['symbol'], 'info', f"Opportunity Candidate: {c['symbol']}", f"score={c['composite_score']} roic={c['roic']} disc={c['valuation_discount_pct']}"))
-    record_scheduled_job('daily_monitoring', now()[:10], 'ok', {'candidates':len(disc.get('candidates') or []),'alerts':len(emitted)})
-    return {'status':'ok','discovery_status':disc.get('status'),'alerts_processed':len(emitted),'orders':'disabled'}

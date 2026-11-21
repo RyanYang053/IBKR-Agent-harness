@@ -1,0 +1,1 @@
+COMMAND: "C:\Users\yang0\Personal Agent Framework\.venv-qa\Scripts\python.exe" -m compileall -q personal_agent dashboard.py scripts/verify.py tests/acceptance

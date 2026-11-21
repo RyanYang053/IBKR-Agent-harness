@@ -142,7 +142,15 @@ def evaluate_policy(portfolio_snapshot=None, proposed_trade=None, market_snapsho
     hard_blocks=[]
     if proposed_trade:
         try:
-            csnap=simulate_allocation(csnap, proposed_trades=[proposed_trade], investment_policy=pol, require_explicit_account=False)
+            trade=dict(proposed_trade)
+            # A policy proposal may name only a base-currency amount. Represent that
+            # amount as one explicit unit so the reducer does not invent a share count.
+            if trade.get('quantity') in (None, '') and trade.get('price_per_unit') in (None, ''):
+                trade['quantity']='1'
+                trade['price_per_unit']=str(trade.get('amount_base'))
+                trade.setdefault('currency', csnap.currency)
+                trade.setdefault('asset', 'STK')
+            csnap=simulate_allocation(csnap, proposed_trades=[trade], investment_policy=pol, require_explicit_account=False)
         except ValueError as exc:
             msg=str(exc); rule=msg.split(':',1)[0]
             if rule in {'unknown_account','missing_account_buying_power','insufficient_account_buying_power','insufficient_account_position','oversell_rejected'}:
@@ -363,7 +371,7 @@ def driver_based_valuation(revenue_t0, rev_cagr_base, op_margin_target, tax_rate
     if p_sum<=0: raise ValueError('scenario probabilities must sum to positive value')
     p_bear, p_base, p_bull = p_bear/p_sum, p_base/p_sum, p_bull/p_sum
     scenarios={
-        'bear':{'prob':p_bear,'rev_g':g_base+float(bear_rev_delta),'margin':max(0.01, m_base+float(bear_margin_delta)),'wacc':disc+0.005},
+        'bear':{'prob':p_bear,'rev_g':g_base+float(bear_rev_delta),'margin':m_base+float(bear_margin_delta),'wacc':disc+0.005},
         'base':{'prob':p_base,'rev_g':g_base,'margin':m_base,'wacc':disc},
         'bull':{'prob':p_bull,'rev_g':g_base+float(bull_rev_delta),'margin':m_base+float(bull_margin_delta),'wacc':max(g_term+0.01, disc-0.005)}
     }
@@ -502,7 +510,9 @@ def record_earnings_expectation(symbol, period, basis='management_guidance', exp
     with db('ops') as c:
         _quant_schema(c)
         existing=[dict(r) for r in c.execute('SELECT * FROM earnings_expectations WHERE symbol=? AND period=? ORDER BY id ASC',(sym,per))]
-        pre_row=next((r for r in existing if r['entry_type']=='pre_earnings'), existing[0] if existing else None)
+        pre_row=next((r for r in existing if r['entry_type']=='pre_earnings'), None)
+        if has_act and pre_row is None:
+            raise ValueError('retrospective_actuals_require_prior_pre_earnings_expectation: record the pre-release expectation before actual results')
         if pre_row is None:
             c.execute('''INSERT INTO earnings_expectations
                 (symbol,period,entry_type,basis,exp_revenue,exp_eps,exp_guidance_growth,implied_move_pct,act_revenue,act_eps,act_guidance_growth,recorded_pre_at,updated_post_at,note)
@@ -538,10 +548,18 @@ def evaluate_expectation_gap(symbol, period=''):
     guide_diff=(merged_act['act_guidance_growth']-pre['exp_guidance_growth']) if (merged_act['act_guidance_growth'] is not None and pre['exp_guidance_growth'] is not None) else None
     verdict='awaiting_actuals'
     if any(x is not None for x in (rev_surp, eps_surp, guide_diff)):
-        if (guide_diff is not None and guide_diff<-0.01) or (rev_surp is not None and rev_surp<-0.02):
+        beat=(rev_surp is not None and rev_surp>0.02) or (eps_surp is not None and eps_surp>0.02)
+        miss=(rev_surp is not None and rev_surp<-0.02) or (eps_surp is not None and eps_surp<-0.02)
+        guide_up=guide_diff is not None and guide_diff>0.01
+        guide_down=guide_diff is not None and guide_diff<-0.01
+        if guide_down or (miss and not beat):
             verdict='negative_expectation_gap_review_thesis'
-        elif (guide_diff is not None and guide_diff>0.01) or (rev_surp is not None and rev_surp>0.02 and (eps_surp is None or eps_surp>=0)):
+        elif beat and guide_up:
             verdict='positive_beat_and_raise'
+        elif beat:
+            verdict='positive_beat'
+        elif guide_up:
+            verdict='guidance_raise'
         else:
             verdict='inline_with_prior_expectations'
     snap_merged={**pre,**merged_act,'history_entries':len(rows)}
@@ -621,14 +639,25 @@ def simulate_allocation(portfolio_snapshot, cash_contribution=0.0, proposed_trad
                     raise ValueError(f'insufficient_account_buying_power:{acct_t} buying_power={a_cur.buying_power} < {delta_v+fee}')
             elif a_cur.cash is None or (a_cur.cash-delta_v-fee)<Decimal('-0.000001'):
                 raise ValueError(f'missing_account_buying_power:{acct_t} requires buying_power for margin borrowing')
+        if cid:
+            matches=[i for i,p in enumerate(pos_list) if p.conid==cid and p.account==acct_t]
+        else:
+            matches=[i for i,p in enumerate(pos_list) if p.symbol==sym and p.account==acct_t]
+            if len(matches)>1:
+                raise ValueError(f'ambiguous_contract:{sym} in {acct_t} matches {len(matches)} conids; specify conid')
+        p_idx=matches[0] if matches else None
+        if p_idx is not None and tr_qty is not None and px_u is None:
+            pref=pos_list[p_idx]
+            if pref.quantity!=0 and pref.market_value_base!=0:
+                unit=abs(pref.market_value_base/pref.quantity)
+                implied=tr_qty*unit
+                if abs(implied-amt)>max(Decimal('0.05'), amt*Decimal('0.01')):
+                    raise ValueError(f'inconsistent_quantity_price_amount: missing price_per_unit; mark {unit} * {tr_qty} = {implied} != {amt}')
+        if p_idx is None and tr_qty is None and px_u is None:
+            raise ValueError(f'quantity_or_price_required:{sym}')
         new_cash=((a_cur.cash if a_cur.cash is not None else Decimal(0))-delta_v-fee) if a_cur.cash is not None or delta_v<0 else None
         new_bp=(a_cur.buying_power-delta_v-fee) if a_cur.buying_power is not None else None
         accts[a_idx]=AccountRecord(account=a_cur.account, tax_bucket=a_cur.tax_bucket, nav=a_cur.nav-fee, cash=new_cash, allow_margin=allow_m, buying_power=new_bp, source=a_cur.source)
-        if cid:
-            p_idx=next((i for i,p in enumerate(pos_list) if p.conid==cid and p.account==acct_t), None)
-        else:
-            p_idx=next((i for i,p in enumerate(pos_list) if p.symbol==sym and p.account==acct_t), None)
-        tr_qty=dec(tr['quantity']) if tr.get('quantity') not in (None,'') else None
         if p_idx is not None:
             p0=pos_list[p_idx]
             new_mv=p0.market_value_base+delta_v
@@ -644,19 +673,24 @@ def simulate_allocation(portfolio_snapshot, cash_contribution=0.0, proposed_trad
                 new_qty=p0.quantity
             if act=='COVER' and p0.quantity<0 and new_qty>Decimal('0.000001'):
                 raise ValueError(f'cover_exceeds_short_position:{sym} in {acct_t}')
-            pos_list[p_idx]=PositionRecord(account=p0.account, conid=p0.conid, symbol=p0.symbol, asset=p0.asset, currency=p0.currency, quantity=new_qty, multiplier=p0.multiplier, market_value_base=max(Decimal(0), new_mv) if p0.market_value_base>=0 else new_mv, underlying_conid=p0.underlying_conid, cost_basis=p0.cost_basis, underlying_price=p0.underlying_price, underlying_currency=p0.underlying_currency, fx_rate_to_base=p0.fx_rate_to_base, delta=p0.delta, source=p0.source)
+            new_cb=p0.cost_basis
+            if p0.cost_basis is not None:
+                if act in {'BUY','ADD'}:
+                    new_cb=p0.cost_basis+amt+fee
+                elif act in {'SELL','TRIM'} and p0.quantity>0:
+                    remain=new_qty if new_qty>0 else Decimal(0)
+                    new_cb=p0.cost_basis*remain/p0.quantity
+            pos_list[p_idx]=PositionRecord(account=p0.account, conid=p0.conid, symbol=p0.symbol, asset=p0.asset, currency=p0.currency, quantity=new_qty, multiplier=p0.multiplier, market_value_base=max(Decimal(0), new_mv) if p0.market_value_base>=0 else new_mv, underlying_conid=p0.underlying_conid, cost_basis=new_cb, underlying_price=p0.underlying_price, underlying_currency=p0.underlying_currency, fx_rate_to_base=p0.fx_rate_to_base, delta=p0.delta, source=p0.source)
         else:
             if delta_v<0: raise ValueError(f'insufficient_account_position:unheld {sym} in {acct_t}')
-            if t_asset=='OPT' and tr_qty is None and px_u is None:
-                raise ValueError(f'quantity_or_price_required:{sym}')
-            est_qty=tr_qty if tr_qty is not None else ((amt/(px_u*mult_v*fx_v)) if (px_u and px_u>0) else Decimal(0))
+            est_qty=tr_qty if tr_qty is not None else (amt/(px_u*mult_v*fx_v))
             pos_list.append(PositionRecord(
                 account=acct_t, conid=cid or sym, symbol=sym, asset=t_asset,
                 currency=t_cur, quantity=est_qty,
                 multiplier=mult_v,
                 market_value_base=delta_v,
                 underlying_conid=tr.get('underlying_conid'),
-                cost_basis=dec(tr['cost_basis']) if tr.get('cost_basis') not in (None,'') else None,
+                cost_basis=dec(tr['cost_basis']) if tr.get('cost_basis') not in (None,'') else (amt+fee),
                 underlying_price=dec(tr['underlying_price']) if tr.get('underlying_price') is not None else None,
                 underlying_currency=str(tr.get('underlying_currency') or t_cur).upper(),
                 fx_rate_to_base=fx_v,
@@ -803,7 +837,18 @@ def allocate_incremental_capital(amount_base, candidates=None, expected_returns=
     port_vol_post=float(math.sqrt(max(0.0, float(w_opt_post_all.T@cov_all@w_opt_post_all)))) if m_all>0 else 0.0
     port_ret_post=float(np.dot(w_opt_post_all, np.array([mus[s] for s in all_syms])))+(max(0.0, (cash_cur+hold_cash_amt)/new_nav))*rf
     contrib_amt=0.0 if use_existing_cash else add_amt
-    post_snapshot=simulate_allocation(csnap, cash_contribution=contrib_amt, proposed_trades=[{'symbol':a['symbol'],'action':'BUY','amount_base':str(a['amount_base']),'account':contribution_account or ''} for a in opt_alloc], contribution_account=contribution_account, investment_policy=pol, require_explicit_account=False)
+    held_symbols={p.symbol for p in csnap.positions}
+    exec_trades=[]
+    for a in opt_alloc:
+        trade={'symbol':a['symbol'],'action':'BUY','amount_base':str(a['amount_base']),'account':contribution_account or '','asset':'STK','currency':csnap.currency}
+        if a['symbol'] not in held_symbols:
+            trade['quantity']='1'
+            trade['price_per_unit']=str(a['amount_base'])
+        exec_trades.append(trade)
+    try:
+        post_snapshot=simulate_allocation(csnap, cash_contribution=contrib_amt, proposed_trades=exec_trades, contribution_account=contribution_account, investment_policy=pol, require_explicit_account=False)
+    except ValueError as exc:
+        return {'status':'blocked','reason':'non_executable_allocation','detail':str(exc),'snapshot_id':csnap.snapshot_id}
     pol_check=evaluate_policy(portfolio_snapshot=post_snapshot, investment_policy=pol, mode='PROPOSED_PLAN')
     overall_status='blocked_policy_violation' if pol_check.get('hard_blocks') else 'ok'
 

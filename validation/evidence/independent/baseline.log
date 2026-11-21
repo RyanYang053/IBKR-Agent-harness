@@ -1,0 +1,88 @@
+COMMAND: C:\Users\yang0\Personal Agent Framework\.venv-qa\Scripts\python.exe scripts/verify.py
+2026-11-21 13:50:58.765 WARNING streamlit.runtime.scriptrunner_utils.script_run_context: Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+Processing request of type CallToolRequest
+Processing request of type ListToolsRequest
+Processing request of type CallToolRequest
+Processing request of type CallToolRequest
+Processing request of type ListToolsRequest
+Processing request of type CallToolRequest
+Processing request of type CallToolRequest
+Processing request of type ListToolsRequest
+Processing request of type CallToolRequest
+Processing request of type ListToolsRequest
+PASS two-account sum
+PASS reimport
+PASS transfer excluded
+PASS dcf
+PASS multi-stage & reverse dcf
+PASS pre-trade gatekeeper
+PASS scenario
+PASS tax positions weighted
+PASS counterfactual attribution workflow
+PASS dashboard 9-tab headless render
+PASS trading habits telemetry
+PASS compact daily brief
+PASS xirr
+PASS mixed currency
+PASS date mismatch
+PASS mismatch withholds return
+PASS quote universe
+PASS yfinance not live
+PASS fresh iex live
+PASS stale iex not live
+PASS closed session not live
+PASS no delayed substitute
+PASS cached stale stays delayed
+PASS cached bars historical
+PASS stock brief withholds stale upside
+PASS ssrf loopback blocked
+PASS knowledge search
+PASS chinese substring
+PASS secret file excluded
+PASS deleted source
+PASS memory supersede
+PASS decision journal
+PASS recursive guardrails
+PASS improvement loop
+PASS workflow halts awaiting approval
+PASS workflow resume after approval
+PASS sec filing delta workflow
+PASS living thesis and L4 triage
+PASS earnings expectation gap
+PASS investment committee 8-step workflow
+PASS approval cannot bypass blocked gate
+PASS approval idempotent
+PASS unified evaluate_policy oversell block
+PASS allocator blocks stale ledger
+PASS multi-asset allocator capm prior
+PASS driver dcf da dilution roic
+PASS living thesis immutable history
+PASS earnings expectation pre_earnings locked
+PASS options exact nd2 and arb bounds
+PASS durable workflow resume and wal backup
+PASS foreign cash flow missing fx fails closed
+PASS canonical snapshot gross and option fx delta
+PASS unknown account and missing bp fail closed
+PASS approval_intents crash recovery and reject race
+PASS 55-position untruncated snapshot vs bounded portfolio
+PASS transaction simulation cash and nav conservation
+PASS plan mode hard blocks gross 160
+PASS concurrent approve single journal commit
+PASS backup and restore rehearsal
+PASS broker readonly replay and flex reconciliation
+PASS v0.4.1 etf lookthrough, option chain/roll, and acb
+PASS v0.5.0-v0.5.1 pit restatement, ttm, and sector valuation
+PASS v0.6-v1.0 discovery, alerts, calibration, and shadow check
+PASS option buy doubles delta exposure to 100pct
+PASS tfsa negative cash rejected by reducer
+PASS approving NULL memory_id crash recovery
+PASS sec ytd differencing and auto stage-b discovery
+PASS evaluation harness 100pct
+PASS mcp knowledge ping
+PASS mcp knowledge tool
+PASS mcp investment ping
+PASS mcp investment tool
+PASS mcp cfo ping
+PASS mcp cfo tool
+PASS mcp public-only excludes private ledger
+ALL ESSENTIAL CHECKS PASSED

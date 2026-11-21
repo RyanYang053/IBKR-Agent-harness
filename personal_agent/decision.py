@@ -1026,7 +1026,10 @@ def discover_opportunities(universe_symbols=None, features_by_symbol=None, max_c
                 excluded.append({'symbol':sym,'reason':'insufficient_fundamental_and_price_features'}); continue
             px0=float(b[0]['close']); px1=float(b[-1]['close']); dd=(px1/max(px0,1e-6))-1.0
             excluded.append({'symbol':sym,'reason':'price_only_without_fundamental_quality_features','return_60d':round(dd,4)}); continue
-        roic=float(f.get('roic') or 0.0); fcf_g=float(f.get('fcf_growth') or 0.0); dil=float(f.get('dilution_rate') or 0.0)
+        if f.get('roic') is None or f.get('fcf_growth') is None or f.get('dilution_rate') is None:
+            data_missing_cnt+=1
+            excluded.append({'symbol':sym,'reason':'missing_fcf_growth_or_dilution','roic':f.get('roic'),'fcf_growth':f.get('fcf_growth'),'dilution':f.get('dilution_rate')}); continue
+        roic=float(f['roic']); fcf_g=float(f['fcf_growth']); dil=float(f['dilution_rate'])
         if roic<0.10 or fcf_g<0.0 or dil>0.05:
             excluded.append({'symbol':sym,'reason':'failed_quality_or_dilution_floor','roic':roic,'fcf_growth':fcf_g,'dilution':dil}); continue
         disc=f.get('valuation_discount_pct')
@@ -1035,8 +1038,8 @@ def discover_opportunities(universe_symbols=None, features_by_symbol=None, max_c
             rev_ttm=f.get('revenue_ttm'); op_m=f.get('operating_margin'); sh=f.get('shares'); nd=f.get('net_debt') or 0.0
             q_info=market.quote(sym); b_info=market.bars(sym, 1)
             mkt_px=float(q_info['price']) if q_info.get('price') else (float(b_info[-1]['close']) if b_info else None)
-            if rev_ttm and op_m and sh and float(sh)>0 and mkt_px and mkt_px>0:
-                val_res=quant.driver_based_valuation(str(rev_ttm), str(max(0.03, min(0.25, fcf_g))), str(max(0.05, float(op_m))), net_debt=str(nd), shares=str(sh))
+            if rev_ttm and op_m is not None and sh and float(sh)>0 and mkt_px and mkt_px>0:
+                val_res=quant.driver_based_valuation(str(rev_ttm), str(fcf_g), str(float(op_m)), net_debt=str(nd), shares=str(sh))
                 fair_px=val_res['probability_weighted_per_share']
                 disc=(fair_px-mkt_px)/fair_px if fair_px>0 else 0.0
             else:

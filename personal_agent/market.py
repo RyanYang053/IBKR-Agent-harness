@@ -381,6 +381,10 @@ def _upsert_pit_vintage(c, sym, per, stmt_type, std_concept, val, unit_name, f_d
     rows=c.execute('SELECT revision_seq, value, filed_at FROM financial_statements_pit WHERE symbol=? AND period=? AND concept=? ORDER BY revision_seq DESC',(sym,per,std_concept)).fetchall()
     if any(r['filed_at']==f_dt and abs(float(r['value'])-float(val))<1e-6 for r in rows):
         return 0
+    # Same filing date and a different value is an alias collision (for example total
+    # Revenues versus contract revenue), not a restatement. Keep the earlier concept.
+    if any(r['filed_at']==f_dt and abs(float(r['value'])-float(val))>=1e-6 for r in rows):
+        return 0
     if rows and abs(float(rows[0]['value'])-float(val))<1e-6 and f_dt>=rows[0]['filed_at']:
         return 0
     next_seq=(rows[0]['revision_seq']+1) if rows else 1
@@ -994,15 +998,15 @@ def generate_quality_features(symbol, as_of=''):
     fys=sorted(by_fy.keys(), reverse=True)
     ttm=compute_ttm_and_ratios(sym, as_of=as_of)
     roic=(ttm.get('ratios') or {}).get('roic_pre_tax_approx')
-    fcf_g=0.0; dil=0.0
+    fcf_g=None; dil=None
     if len(fys)>=2:
         c0=by_fy[fys[0]]; c1=by_fy[fys[1]]
         fcf0=(c0.get('OperatingCashFlow',0)-abs(c0.get('CapEx',0))) if ('OperatingCashFlow' in c0 and 'CapEx' in c0) else None
         fcf1=(c1.get('OperatingCashFlow',0)-abs(c1.get('CapEx',0))) if ('OperatingCashFlow' in c1 and 'CapEx' in c1) else None
-        if fcf0 is not None and fcf1 and abs(fcf1)>1e-6: fcf_g=(fcf0-fcf1)/abs(fcf1)
-        sh0=c0.get('DilutedShares') or c0.get('SharesOutstanding')
-        sh1=c1.get('DilutedShares') or c1.get('SharesOutstanding')
-        if sh0 and sh1 and sh1>0: dil=(sh0-sh1)/sh1
+        if fcf0 is not None and fcf1 is not None and abs(fcf1)>1e-6: fcf_g=(fcf0-fcf1)/abs(fcf1)
+        sh0=c0.get('DilutedShares') if c0.get('DilutedShares') is not None else c0.get('SharesOutstanding')
+        sh1=c1.get('DilutedShares') if c1.get('DilutedShares') is not None else c1.get('SharesOutstanding')
+        if sh0 is not None and sh1 is not None and sh1>0: dil=(sh0-sh1)/sh1
         if roic is None and c0.get('OperatingIncome') is not None:
             ic=(c0.get('TotalDebt',0)+c0.get('ShareholdersEquity',0)-c0.get('Cash',0))
             if ic>0: roic=(c0['OperatingIncome']*0.79)/ic
@@ -1012,4 +1016,4 @@ def generate_quality_features(symbol, as_of=''):
     latest_fy=by_fy[fys[0]] if fys else {}
     net_debt=(latest_fy['TotalDebt']-latest_fy['Cash']) if ('TotalDebt' in latest_fy and 'Cash' in latest_fy) else None
     shares=latest_fy.get('DilutedShares') or latest_fy.get('SharesOutstanding')
-    return {'roic':round(float(roic),4),'fcf_growth':round(float(fcf_g),4),'dilution_rate':round(float(dil),4),'valuation_discount_pct':None,'revenue_ttm':rev_ttm,'operating_margin':op_m,'net_debt':net_debt,'shares':shares,'source':'pit_financial_statements'}
+    return {'roic':round(float(roic),4),'fcf_growth':None if fcf_g is None else round(float(fcf_g),4),'dilution_rate':None if dil is None else round(float(dil),4),'valuation_discount_pct':None,'revenue_ttm':rev_ttm,'operating_margin':op_m,'net_debt':net_debt,'shares':shares,'source':'pit_financial_statements'}
