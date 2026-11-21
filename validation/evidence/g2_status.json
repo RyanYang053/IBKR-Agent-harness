@@ -1,0 +1,9 @@
+{
+  "schema": "g2_status.v1",
+  "result": "BLOCKED_EXTERNAL",
+  "live_verified": false,
+  "production_accepted": false,
+  "reason": "No local TWS/IB Gateway API port is accepting connections on 7496/7497/4001/4002.",
+  "recorded_at": "2026-11-21T19:47:10.145367+00:00",
+  "local_evidence": "local\\g2_live_evidence\\g2_20261121T194706Z_blocked.json"
+}

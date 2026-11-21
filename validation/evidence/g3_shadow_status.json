@@ -1,0 +1,12 @@
+{
+  "schema": "g3_shadow_status.v1",
+  "result": "IN_PROGRESS",
+  "completed_sessions": 1,
+  "required_sessions": 20,
+  "remaining_sessions": 19,
+  "production_accepted": false,
+  "live_verified": false,
+  "updated_at": "2026-11-21T19:47:19.773943+00:00",
+  "local_ledger": "local\\shadow_sessions\\ledger.json",
+  "note": "G3 cannot be completed in one coding session; operator must record 20 trading days."
+}
