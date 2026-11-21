@@ -1,0 +1,694 @@
+{
+  "schema": "evidence_matrix.v1",
+  "git_sha": "985bd63c06432bc25ae72a71e47bdf3cfa96a8a4",
+  "mandatory_acceptance_ids": 52,
+  "missing_mandatory_ids": [],
+  "rows": [
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_B01_tws_adapter_callbacks_and_timeout",
+      "classname": "tests.acceptance.test_broker",
+      "status": "PASS",
+      "seconds": "0.082"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_B02_partial_capture_never_marked_live_verified",
+      "classname": "tests.acceptance.test_broker",
+      "status": "PASS",
+      "seconds": "0.179"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_B03_reconciliation_per_account_and_currency",
+      "classname": "tests.acceptance.test_broker",
+      "status": "PASS",
+      "seconds": "0.082"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_B04_quote_reqid_9001_vs_conid_9001_and_sentinel_delta",
+      "classname": "tests.acceptance.test_broker",
+      "status": "PASS",
+      "seconds": "0.011"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_B05_broker_enrichment_preserves_flex_and_updates_hash",
+      "classname": "tests.acceptance.test_broker",
+      "status": "PASS",
+      "seconds": "0.101"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_B06_option_chain_qualification_and_staleness",
+      "classname": "tests.acceptance.test_broker",
+      "status": "PASS",
+      "seconds": "0.011"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_B07_readonly_broker_contract_enforced",
+      "classname": "tests.acceptance.test_broker",
+      "status": "PASS",
+      "seconds": "0.012"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_F01_untruncated_analytics_invariant_to_max_tool_rows",
+      "classname": "tests.acceptance.test_financial",
+      "status": "PASS",
+      "seconds": "0.644"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_F02_consistent_snapshot_read_and_non_overwriting_historical_import",
+      "classname": "tests.acceptance.test_financial",
+      "status": "PASS",
+      "seconds": "0.078"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_F03_freshness_future_statement_missing_cash_and_empty_cash_only",
+      "classname": "tests.acceptance.test_financial",
+      "status": "PASS",
+      "seconds": "0.100"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_F04_multicurrency_cash_flows_intermediate_dates_and_transfers",
+      "classname": "tests.acceptance.test_financial",
+      "status": "PASS",
+      "seconds": "0.079"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_F05_xirr_same_day_multiple_roots_and_known_answer",
+      "classname": "tests.acceptance.test_financial",
+      "status": "PASS",
+      "seconds": "0.010"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_F06_transaction_reducer_strict_validation",
+      "classname": "tests.acceptance.test_financial",
+      "status": "PASS",
+      "seconds": "0.054"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_F07_account_buying_power_and_non_margin_tfsa",
+      "classname": "tests.acceptance.test_financial",
+      "status": "PASS",
+      "seconds": "0.065"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_F08_option_delta_notional_zero_premium_and_invalid_greeks",
+      "classname": "tests.acceptance.test_financial",
+      "status": "PASS",
+      "seconds": "0.063"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_F09_gross_leverage_hard_gate_across_accounts",
+      "classname": "tests.acceptance.test_financial",
+      "status": "PASS",
+      "seconds": "0.051"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_F10_allocator_existing_cash_vs_new_contribution",
+      "classname": "tests.acceptance.test_financial",
+      "status": "PASS",
+      "seconds": "0.160"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_F11_canadian_acb_pooled_split_dedup_and_fx",
+      "classname": "tests.acceptance.test_financial",
+      "status": "PASS",
+      "seconds": "0.055"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_F12_pnl_bridge_and_option_attribution_units",
+      "classname": "tests.acceptance.test_financial",
+      "status": "PASS",
+      "seconds": "0.068"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_O01_backup_and_restore_rehearsal_across_all_dbs",
+      "classname": "tests.acceptance.test_ops",
+      "status": "PASS",
+      "seconds": "0.211"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_O02_shadow_readiness_fails_closed_for_stale_replay_or_blocked",
+      "classname": "tests.acceptance.test_ops",
+      "status": "PASS",
+      "seconds": "0.142"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_O03_cli_error_exits_nonzero_and_eval_subprocess_isolation",
+      "classname": "tests.acceptance.test_ops",
+      "status": "PASS",
+      "seconds": "0.737"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_O04_legacy_db_migration_idempotent",
+      "classname": "tests.acceptance.test_ops",
+      "status": "PASS",
+      "seconds": "0.043"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_O05_cli_help_and_headless_dashboard_smoke",
+      "classname": "tests.acceptance.test_ops",
+      "status": "PASS",
+      "seconds": "0.200"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_Q01_bars_open_close_provenance_and_atomic_backfill",
+      "classname": "tests.acceptance.test_quant",
+      "status": "PASS",
+      "seconds": "0.080"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_Q02_backtest_next_bar_open_and_financing_cost_monotonicity",
+      "classname": "tests.acceptance.test_quant",
+      "status": "PASS",
+      "seconds": "0.063"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_Q03_covariance_psd_and_stress_fx_consistency",
+      "classname": "tests.acceptance.test_quant",
+      "status": "PASS",
+      "seconds": "0.117"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_Q04_etf_lookthrough_no_double_count_and_unallocated",
+      "classname": "tests.acceptance.test_quant",
+      "status": "PASS",
+      "seconds": "0.011"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_Q05_bsm_iv_inversion_covered_call_and_roll_credit",
+      "classname": "tests.acceptance.test_quant",
+      "status": "PASS",
+      "seconds": "0.010"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_Q06_cashflow_strategy_and_brier_learning_boundaries",
+      "classname": "tests.acceptance.test_quant",
+      "status": "PASS",
+      "seconds": "0.117"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_C01_sync_filings_transport_populates_equity_and_pit_without_manual_inserts",
+      "classname": "tests.acceptance.test_research",
+      "status": "PASS",
+      "seconds": "0.072"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_C02_comparative_prior_year_facts_same_fy_fp_retained",
+      "classname": "tests.acceptance.test_research",
+      "status": "PASS",
+      "seconds": "0.073"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_C03_pit_selects_by_publication_time_not_insertion_order",
+      "classname": "tests.acceptance.test_research",
+      "status": "PASS",
+      "seconds": "0.072"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_C04_ytd_differencing_and_component_availability",
+      "classname": "tests.acceptance.test_research",
+      "status": "PASS",
+      "seconds": "0.074"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_C05_nonadditive_shares_and_bs_not_summed",
+      "classname": "tests.acceptance.test_research",
+      "status": "PASS",
+      "seconds": "0.095"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_C06_non_contiguous_quarters_block_ttm",
+      "classname": "tests.acceptance.test_research",
+      "status": "PASS",
+      "seconds": "0.098"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_C07_distinct_evidence_hashes_for_distinct_documents",
+      "classname": "tests.acceptance.test_research",
+      "status": "PASS",
+      "seconds": "0.069"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_C08_dcf_golden_model_and_invalid_input_rejection",
+      "classname": "tests.acceptance.test_research",
+      "status": "PASS",
+      "seconds": "0.011"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_C09_sector_valuation_methods_rim_and_sotp",
+      "classname": "tests.acceptance.test_research",
+      "status": "PASS",
+      "seconds": "0.010"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_C10_e2e_sec_pipeline_to_auto_discovery",
+      "classname": "tests.acceptance.test_research",
+      "status": "PASS",
+      "seconds": "0.087"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_C11_expectations_partial_actuals_and_forecast_pit",
+      "classname": "tests.acceptance.test_research",
+      "status": "PASS",
+      "seconds": "0.129"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_C12_research_sec_forensics_missing_vs_cached",
+      "classname": "tests.acceptance.test_research",
+      "status": "PASS",
+      "seconds": "0.077"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_S01_public_mcp_process_db_isolation_and_canary",
+      "classname": "tests.acceptance.test_security",
+      "status": "PASS",
+      "seconds": "0.155"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_S02_local_privacy_routing_boundary",
+      "classname": "tests.acceptance.test_security",
+      "status": "PASS",
+      "seconds": "0.011"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_S03_ssrf_blocks_loopback_private_ipv6_creds_and_redirects",
+      "classname": "tests.acceptance.test_security",
+      "status": "PASS",
+      "seconds": "0.080"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_S04_knowledge_index_blocks_secrets_and_traversal",
+      "classname": "tests.acceptance.test_security",
+      "status": "PASS",
+      "seconds": "0.049"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_W01_immutable_params_resume_and_reject_tamper",
+      "classname": "tests.acceptance.test_workflow",
+      "status": "PASS",
+      "seconds": "0.194"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_W02_concurrent_approve_and_reject_race_single_journal",
+      "classname": "tests.acceptance.test_workflow",
+      "status": "PASS",
+      "seconds": "0.325"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_W03_crash_recovery_after_claim_and_ttl_expiry",
+      "classname": "tests.acceptance.test_workflow",
+      "status": "PASS",
+      "seconds": "0.623"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_W04_ic_memo_blocks_failed_allocator_or_blocked_gate",
+      "classname": "tests.acceptance.test_workflow",
+      "status": "PASS",
+      "seconds": "1.276"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_W05_monitoring_dedup_alerts_and_scheduled_jobs",
+      "classname": "tests.acceptance.test_workflow",
+      "status": "PASS",
+      "seconds": "0.063"
+    },
+    {
+      "kind": "acceptance",
+      "id": "",
+      "test": "test_W06_mcp_cli_and_public_surface_consistency",
+      "classname": "tests.acceptance.test_workflow",
+      "status": "PASS",
+      "seconds": "0.022"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R01_full_120_position_snapshot_not_ui_truncated",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.135"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R02_account_statement_date_mismatch_blocks_advice",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.053"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R03_unknown_foreign_cash_flow_requires_explicit_fx",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.011"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R04_cash_contribution_is_not_investment_profit",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.065"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R05_unmatched_transfer_must_block_combined_returns",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.326"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R06_buy_preserves_account_cash_nav_and_lot_identity",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.011"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R07_unknown_margin_buying_power_blocks_new_borrowing",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.011"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R08_oversell_is_rejected_by_quantity_not_just_market_value",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.010"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R09_quantity_amount_without_price_is_not_executable_trade",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.010"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R10_same_symbol_different_contract_without_conid_must_not_guess",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.009"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R11_value_with_zero_quantity_is_not_a_valid_new_stock_position",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.011"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R12_fx_and_contract_multiplier_are_applied_to_actual_trade",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.010"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R13_snapshot_id_changes_when_risk_relevant_lot_metadata_changes",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.010"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R14_option_delta_exposure_matches_signed_notional_oracle",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.011"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R15_partial_or_replay_capture_cannot_enrich_investment_state",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.046"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R16_stale_live_broker_snapshot_must_not_enrich",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.034"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R17_broker_buying_power_usd_must_be_converted_or_marked_unavailable",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.035"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R18_old_live_capture_must_not_reconcile_as_current_state",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.066"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R19_as_of_restatement_never_uses_future_publication",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.072"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R20_incomplete_quarters_cannot_be_called_ttm",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.081"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R21_missing_fcf_growth_and_dilution_are_not_zero_return_forecasts",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.168"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R22_earnings_actuals_must_not_be_backdated_as_pre_earnings_forecast",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.033"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R23_beat_without_guidance_raise_must_not_claim_beat_and_raise",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.047"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R24_unprofitable_bear_case_must_not_be_forced_positive_margin",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.010"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R25_dcf_oracle_perpetuity_100_fcf_10pct_wacc_2pct_g",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.010"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R26_bsm_closed_form_atm_one_year_european_call",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.010"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R27_missing_open_price_remains_missing_to_backtester",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.064"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R28_prediction_brier_is_computed_from_actual_outcomes",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.071"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R29_public_mode_cannot_open_local_private_sqlite",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.012"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R30_real_sqlite_backup_restore_preserves_rows",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.152"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R31_real_approval_journal_has_exactly_one_human_commit",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.285"
+    },
+    {
+      "kind": "independent",
+      "id": "",
+      "test": "test_R32_offline_replay_cannot_certify_live_shadow_mode",
+      "classname": "tests.independent.test_real_scenarios",
+      "status": "PASS",
+      "seconds": "0.118"
+    }
+  ],
+  "external_blockers": [
+    {
+      "id": "G2",
+      "status": "BLOCKED_EXTERNAL",
+      "reason": "Real IBKR read-only TWS connectivity was not run in this offline session."
+    },
+    {
+      "id": "G3",
+      "status": "BLOCKED_EXTERNAL",
+      "reason": "20 trading-session Shadow Mode has no operator session record."
+    }
+  ],
+  "live_verified": false,
+  "production_accepted": false
+}

@@ -13,6 +13,8 @@ local/
 *.db
 *.xml
 !tests/fixtures/*.xml
+!validation/evidence/**/*.xml
+!validation/evidence/**/*.log
 
 # Local configs, credentials, and secrets (NEVER commit)
 .env*

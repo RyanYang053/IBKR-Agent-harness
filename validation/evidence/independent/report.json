@@ -1,0 +1,279 @@
+{
+  "schema": "independent_real_scenarios.v1",
+  "repo_sha": "985bd63c06432bc25ae72a71e47bdf3cfa96a8a4",
+  "result": "SCENARIO_VERIFIED",
+  "offline_only": true,
+  "live_verified": false,
+  "production_accepted": false,
+  "steps": [
+    {
+      "name": "baseline",
+      "status": "PASS",
+      "exit_code": 0,
+      "started_at": "2026-11-21T18:32:47.026620+00:00",
+      "finished_at": "2026-11-21T18:32:55.935261+00:00",
+      "log": "validation\\evidence\\independent\\baseline.log",
+      "sha256": "219fe19136aaa4b47ebd9da52d0c0ff12ad78aa4436bfeb6e150eb3cab0ac3c2"
+    },
+    {
+      "name": "original_contract",
+      "status": "PASS",
+      "exit_code": 0,
+      "started_at": "2026-11-21T18:32:55.935560+00:00",
+      "finished_at": "2026-11-21T18:33:23.866241+00:00",
+      "log": "validation\\evidence\\independent\\original_contract.log",
+      "sha256": "2e9aa16645a0ddba7de5aa53c59397140bfcda122181923051ec276ed62d2c2c"
+    },
+    {
+      "name": "independent_scenarios",
+      "status": "PASS",
+      "exit_code": 0,
+      "started_at": "2026-11-21T18:33:23.866508+00:00",
+      "finished_at": "2026-11-21T18:33:26.553299+00:00",
+      "log": "validation\\evidence\\independent\\independent_scenarios.log",
+      "sha256": "b6f6e697f64bfcccce4c8e1e74c60d913f76d316a4b3e135c7c97c708f4faf68"
+    }
+  ],
+  "independent_scenarios": {
+    "total": 32,
+    "passed": 32,
+    "failed": 0,
+    "skipped": 0,
+    "errors": 0,
+    "cases": [
+      {
+        "id": "test_R01_full_120_position_snapshot_not_ui_truncated",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R02_account_statement_date_mismatch_blocks_advice",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R03_unknown_foreign_cash_flow_requires_explicit_fx",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R04_cash_contribution_is_not_investment_profit",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R05_unmatched_transfer_must_block_combined_returns",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R06_buy_preserves_account_cash_nav_and_lot_identity",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R07_unknown_margin_buying_power_blocks_new_borrowing",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R08_oversell_is_rejected_by_quantity_not_just_market_value",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R09_quantity_amount_without_price_is_not_executable_trade",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R10_same_symbol_different_contract_without_conid_must_not_guess",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R11_value_with_zero_quantity_is_not_a_valid_new_stock_position",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R12_fx_and_contract_multiplier_are_applied_to_actual_trade",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R13_snapshot_id_changes_when_risk_relevant_lot_metadata_changes",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R14_option_delta_exposure_matches_signed_notional_oracle",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R15_partial_or_replay_capture_cannot_enrich_investment_state",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R16_stale_live_broker_snapshot_must_not_enrich",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R17_broker_buying_power_usd_must_be_converted_or_marked_unavailable",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R18_old_live_capture_must_not_reconcile_as_current_state",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R19_as_of_restatement_never_uses_future_publication",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R20_incomplete_quarters_cannot_be_called_ttm",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R21_missing_fcf_growth_and_dilution_are_not_zero_return_forecasts",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R22_earnings_actuals_must_not_be_backdated_as_pre_earnings_forecast",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R23_beat_without_guidance_raise_must_not_claim_beat_and_raise",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R24_unprofitable_bear_case_must_not_be_forced_positive_margin",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R25_dcf_oracle_perpetuity_100_fcf_10pct_wacc_2pct_g",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R26_bsm_closed_form_atm_one_year_european_call",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R27_missing_open_price_remains_missing_to_backtester",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R28_prediction_brier_is_computed_from_actual_outcomes",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R29_public_mode_cannot_open_local_private_sqlite",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R30_real_sqlite_backup_restore_preserves_rows",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R31_real_approval_journal_has_exactly_one_human_commit",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_R32_offline_replay_cannot_certify_live_shadow_mode",
+        "status": "PASS",
+        "details": ""
+      }
+    ]
+  },
+  "missing_scenarios": [],
+  "source_suites": [
+    "existing tests/acceptance",
+    "tests/independent/test_real_scenarios.py"
+  ],
+  "limitations": [
+    "No authenticated TWS/IBKR connection is made.",
+    "Synthetic fixtures validate logic, not entitlement or real-market correctness.",
+    "Testing all 52 acceptance IDs semantically is a separate reviewer requirement.",
+    "A green run is not evidence of alpha or successful trading."
+  ],
+  "workflows": {
+    "suite": "tests/independent/test_offline_workflows.py",
+    "cases": 7,
+    "status": "PASS",
+    "junit": "validation/evidence/independent/scenarios-full.xml"
+  },
+  "data_provenance": {
+    "sec_fixtures": {
+      "MSFT": {
+        "path": "tests/fixtures/sec/MSFT_companyfacts.json",
+        "sha256": "8c1903c041f5c27e86ed15f37debb1f41882b7904bba129ef9edc76478b1e8ea",
+        "source": "https://data.sec.gov/api/xbrl/companyfacts/CIK0000789019.json",
+        "retrieved": "2026-11-21",
+        "note": "Public SEC CompanyFacts bytes; not a market-data entitlement"
+      },
+      "WMT": {
+        "path": "tests/fixtures/sec/WMT_companyfacts.json",
+        "sha256": "49330f98609f70fcef4054edc90bc811398a58c4bf26dc0b218d607967a8dbe4",
+        "source": "https://data.sec.gov/api/xbrl/companyfacts/CIK0000104169.json",
+        "retrieved": "2026-11-21",
+        "note": "Non-calendar fiscal year issuer; public SEC CompanyFacts bytes"
+      }
+    },
+    "broker_transport": "Fake TWS callback transport via IBKRTWSAdapter / sync_broker_replay; no live socket"
+  },
+  "unresolved_blockers": [
+    {
+      "id": "G2_LIVE_IBKR",
+      "status": "BLOCKED_EXTERNAL",
+      "severity": "mandatory_for_production",
+      "reason": "Real IBKR Gateway/TWS read-only connectivity was not executed in this offline session."
+    },
+    {
+      "id": "G3_SHADOW_20",
+      "status": "BLOCKED_EXTERNAL",
+      "severity": "mandatory_for_production",
+      "reason": "20 trading-session Shadow Mode has no operator session evidence."
+    },
+    {
+      "id": "LINUX_CI",
+      "status": "PENDING_CI",
+      "severity": "process",
+      "reason": "Ubuntu matrix job evidence will be produced by GitHub Actions after push; local run was Windows-only."
+    }
+  ],
+  "numerical_oracles": {
+    "R14_option_delta_weight": {
+      "inputs": "qty=1,delta=0.5,mult=100,spot=100,fx=1.4,nav=10000",
+      "expected": 0.7,
+      "method": "1*0.5*100*100*1.4/10000"
+    },
+    "R25_gordon_dcf": {
+      "inputs": "FCF=100,wacc=0.10,g=0.02",
+      "expected": 1250.0,
+      "method": "100/(0.10-0.02)"
+    },
+    "R04_twr_after_contribution": {
+      "inputs": "start=10000,contrib=1000,end=11000",
+      "expected": 0.0,
+      "method": "external cash flow excluded from return"
+    }
+  }
+}

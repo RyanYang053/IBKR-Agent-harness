@@ -1,0 +1,43 @@
+COMMAND: C:\Users\yang0\Personal Agent Framework\.venv-qa\Scripts\python.exe -m pytest tests\independent\test_real_scenarios.py -vv -ra -p no:cacheprovider --junitxml=C:\Users\yang0\Personal Agent Framework\validation\evidence\independent\scenarios.xml
+============================= test session starts =============================
+platform win32 -- Python 3.13.1, pytest-8.4.2, pluggy-1.7.0 -- C:\Users\yang0\Personal Agent Framework\.venv-qa\Scripts\python.exe
+rootdir: C:\Users\yang0\Personal Agent Framework
+configfile: pyproject.toml
+plugins: anyio-4.16.0, platformdirs-4.14.8
+collecting ... collected 32 items
+
+tests/independent/test_real_scenarios.py::test_R01_full_120_position_snapshot_not_ui_truncated PASSED [  3%]
+tests/independent/test_real_scenarios.py::test_R02_account_statement_date_mismatch_blocks_advice PASSED [  6%]
+tests/independent/test_real_scenarios.py::test_R03_unknown_foreign_cash_flow_requires_explicit_fx PASSED [  9%]
+tests/independent/test_real_scenarios.py::test_R04_cash_contribution_is_not_investment_profit PASSED [ 12%]
+tests/independent/test_real_scenarios.py::test_R05_unmatched_transfer_must_block_combined_returns PASSED [ 15%]
+tests/independent/test_real_scenarios.py::test_R06_buy_preserves_account_cash_nav_and_lot_identity PASSED [ 18%]
+tests/independent/test_real_scenarios.py::test_R07_unknown_margin_buying_power_blocks_new_borrowing PASSED [ 21%]
+tests/independent/test_real_scenarios.py::test_R08_oversell_is_rejected_by_quantity_not_just_market_value PASSED [ 25%]
+tests/independent/test_real_scenarios.py::test_R09_quantity_amount_without_price_is_not_executable_trade PASSED [ 28%]
+tests/independent/test_real_scenarios.py::test_R10_same_symbol_different_contract_without_conid_must_not_guess PASSED [ 31%]
+tests/independent/test_real_scenarios.py::test_R11_value_with_zero_quantity_is_not_a_valid_new_stock_position PASSED [ 34%]
+tests/independent/test_real_scenarios.py::test_R12_fx_and_contract_multiplier_are_applied_to_actual_trade PASSED [ 37%]
+tests/independent/test_real_scenarios.py::test_R13_snapshot_id_changes_when_risk_relevant_lot_metadata_changes PASSED [ 40%]
+tests/independent/test_real_scenarios.py::test_R14_option_delta_exposure_matches_signed_notional_oracle PASSED [ 43%]
+tests/independent/test_real_scenarios.py::test_R15_partial_or_replay_capture_cannot_enrich_investment_state PASSED [ 46%]
+tests/independent/test_real_scenarios.py::test_R16_stale_live_broker_snapshot_must_not_enrich PASSED [ 50%]
+tests/independent/test_real_scenarios.py::test_R17_broker_buying_power_usd_must_be_converted_or_marked_unavailable PASSED [ 53%]
+tests/independent/test_real_scenarios.py::test_R18_old_live_capture_must_not_reconcile_as_current_state PASSED [ 56%]
+tests/independent/test_real_scenarios.py::test_R19_as_of_restatement_never_uses_future_publication PASSED [ 59%]
+tests/independent/test_real_scenarios.py::test_R20_incomplete_quarters_cannot_be_called_ttm PASSED [ 62%]
+tests/independent/test_real_scenarios.py::test_R21_missing_fcf_growth_and_dilution_are_not_zero_return_forecasts PASSED [ 65%]
+tests/independent/test_real_scenarios.py::test_R22_earnings_actuals_must_not_be_backdated_as_pre_earnings_forecast PASSED [ 68%]
+tests/independent/test_real_scenarios.py::test_R23_beat_without_guidance_raise_must_not_claim_beat_and_raise PASSED [ 71%]
+tests/independent/test_real_scenarios.py::test_R24_unprofitable_bear_case_must_not_be_forced_positive_margin PASSED [ 75%]
+tests/independent/test_real_scenarios.py::test_R25_dcf_oracle_perpetuity_100_fcf_10pct_wacc_2pct_g PASSED [ 78%]
+tests/independent/test_real_scenarios.py::test_R26_bsm_closed_form_atm_one_year_european_call PASSED [ 81%]
+tests/independent/test_real_scenarios.py::test_R27_missing_open_price_remains_missing_to_backtester PASSED [ 84%]
+tests/independent/test_real_scenarios.py::test_R28_prediction_brier_is_computed_from_actual_outcomes PASSED [ 87%]
+tests/independent/test_real_scenarios.py::test_R29_public_mode_cannot_open_local_private_sqlite PASSED [ 90%]
+tests/independent/test_real_scenarios.py::test_R30_real_sqlite_backup_restore_preserves_rows PASSED [ 93%]
+tests/independent/test_real_scenarios.py::test_R31_real_approval_journal_has_exactly_one_human_commit PASSED [ 96%]
+tests/independent/test_real_scenarios.py::test_R32_offline_replay_cannot_certify_live_shadow_mode PASSED [100%]
+
+- generated xml file: C:\Users\yang0\Personal Agent Framework\validation\evidence\independent\scenarios.xml -
+============================= 32 passed in 2.29s ==============================
