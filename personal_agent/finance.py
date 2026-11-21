@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from .core import db, config, digest, private_dir, HOME, now, bounded, operator_env
+from .core import db, config, digest, private_dir, home, now, bounded, operator_env
 
 class MissingFxRateError(ValueError):
     pass
@@ -103,7 +103,7 @@ def import_xml(path):
     if not accounts or len(set(accounts.values()))!=len(accounts):
         found=sorted({s.get('accountId') or '' for s in all_stmts})
         raise ValueError('configure unique finance.accounts aliases for: '+', '.join(found))
-    raw=private_dir(HOME/'raw'/'ibkr')/(h+'.xml'); raw.write_bytes(data)
+    raw=private_dir(home()/'raw'/'ibkr')/(h+'.xml'); raw.write_bytes(data)
     summary=[]
     with db('finance') as c:
         schema(c)
@@ -299,7 +299,7 @@ def fetch_flex(query_id, token, start=None, end=None):
     for _ in range(12):
         time.sleep(7); data=request('GetStatement',ref); r=xml(data)
         if r.tag=='FlexQueryResponse':
-            p=private_dir(HOME/'raw'/'ibkr')/(digest(data)+'.xml'); p.write_bytes(data); return p
+            p=private_dir(home()/'raw'/'ibkr')/(digest(data)+'.xml'); p.write_bytes(data); return p
         if r.findtext('ErrorCode') not in {'1001','1003','1004','1005','1006','1007','1008','1009','1018','1019','1021'}: raise RuntimeError('Flex retrieval error '+str(r.findtext('ErrorCode')))
     raise TimeoutError('Flex report not ready; retry later')
 EXTERNAL_IN={'deposit','deposits','contribution','contributions'}

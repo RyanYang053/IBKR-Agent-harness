@@ -58,7 +58,7 @@ def osys(tmp_path, monkeypatch):
     import personal_agent.quant as quant
     import personal_agent.broker as broker
     import personal_agent.ops as ops
-    # core.HOME / core.CONFIG are resolved at import time.
+    # Reload so helpers pick up the isolated PERSONAL_AGENT_* env for this case.
     for mod in (core, finance, market, knowledge, decision, quant, broker, ops):
         importlib.reload(mod)
     local_policy = tmp_path / 'config'
