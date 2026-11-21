@@ -1,8 +1,8 @@
 # Independent scenario QA — SCENARIO_VERIFIED
 
-Git SHA: `985bd63c06432bc25ae72a71e47bdf3cfa96a8a4`
+Git SHA: `740186956880ac74f03ccdcd912f0997cc586d99`
 Independent scenarios: 32/32 passed; 0 failed; 0 errors; 0 skipped.
-Offline workflows: 7 PASS (Flex->risk->trade->policy; SEC->PIT->TTM->valuation->discovery; IC approval journal; fake TWS callbacks; scheduled monitor/backup).
+Offline workflows: 9/9 passed; 0 failed.
 
 | ID | Status | Summary |
 |---|---|---|
@@ -39,26 +39,28 @@ Offline workflows: 7 PASS (Flex->risk->trade->policy; SEC->PIT->TTM->valuation->
 | test_R31_real_approval_journal_has_exactly_one_human_commit | PASS |  |
 | test_R32_offline_replay_cannot_certify_live_shadow_mode | PASS |  |
 
+| Workflow | Status |
+|---|---|
+| test_flex_import_snapshot_risk_trade_and_policy | PASS |
+| test_recorded_sec_filings_pit_ttm_valuation_and_discovery | PASS |
+| test_research_committee_approval_journal_and_restart | PASS |
+| test_concurrent_approval_commits_one_journal | PASS |
+| test_broker_callbacks_freshness_and_risk_fingerprint | PASS |
+| test_scheduled_monitor_failure_retry_report_and_restore | PASS |
+| test_shadow_and_live_gates_stay_external | PASS |
+| test_broker_disconnect_retry_entitlement_and_stale_last_good | PASS |
+| test_sec_filings_to_committee_decision_chain | PASS |
+
 ## Unresolved blockers
 
-- `G2_LIVE_IBKR` (BLOCKED_EXTERNAL): Real IBKR Gateway/TWS read-only connectivity was not executed in this offline session.
+- `G2_LIVE_IBKR` (BLOCKED_EXTERNAL): Real IBKR Gateway/TWS read-only connectivity must be run on the operator machine.
 - `G3_SHADOW_20` (BLOCKED_EXTERNAL): 20 trading-session Shadow Mode has no operator session evidence.
-- `LINUX_CI` (PENDING_CI): Ubuntu matrix job evidence will be produced by GitHub Actions after push; local run was Windows-only.
-
-## Data provenance
-
-- MSFT CompanyFacts SHA-256 `8c1903c041f5c27e86ed15f37debb1f41882b7904bba129ef9edc76478b1e8ea`
-- WMT CompanyFacts SHA-256 `49330f98609f70fcef4054edc90bc811398a58c4bf26dc0b218d607967a8dbe4`
-- Broker: Fake TWS callback transport via IBKRTWSAdapter / sync_broker_replay; no live socket
-
-## CI
-
-- Dual-OS Actions run PASS: https://github.com/RyanYang053/IBKR-Agent-harness/actions/runs/44936395581
 
 ## Commands
 
 - `baseline`: PASS, log `validation\evidence\independent\baseline.log`
 - `original_contract`: PASS, log `validation\evidence\independent\original_contract.log`
 - `independent_scenarios`: PASS, log `validation\evidence\independent\independent_scenarios.log`
+- `offline_workflows`: PASS, log `validation\evidence\independent\offline_workflows.log`
 
 No live or production acceptance is claimed.

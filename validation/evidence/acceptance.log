@@ -1,4 +1,4 @@
 COMMAND: "C:\Users\yang0\Personal Agent Framework\.venv-qa\Scripts\python.exe" -m pytest tests/acceptance -q --strict-markers --strict-config -p no:cacheprovider "--junitxml=C:\Users\yang0\Personal Agent Framework\validation\evidence\acceptance.xml"
 ....................................................                     [100%]
 - generated xml file: C:\Users\yang0\Personal Agent Framework\validation\evidence\acceptance.xml -
-52 passed in 9.61s
+52 passed in 13.52s

@@ -4,13 +4,13 @@
   "production_accepted": false,
   "live_verified": false,
   "baseline_sha": "fad9786bb7eda3a1061d44ce7ea547f394ad2c89",
-  "parent_head": "985bd63c06432bc25ae72a71e47bdf3cfa96a8a4",
-  "source_sha256": "52c15eee569ad5d484d7c7ec30c7647bda51f57e9e5112dd7f8d4b83fffddee1",
-  "source_file_count": 49,
+  "parent_head": "740186956880ac74f03ccdcd912f0997cc586d99",
+  "source_sha256": "35dffaff3e0b4933f2db0c547cbffe04e3e9702168186420162f70ebf79fb0f8",
+  "source_file_count": 50,
   "source_unchanged_during_run": true,
   "manifest_sha256": "4b32688339d92e0e43156a072d8e092a36c3a684cf424a1baacb8c31ea545b2b",
-  "started_at": "2026-11-21T18:32:56.108761+00:00",
-  "finished_at": "2026-11-21T18:33:23.693710+00:00",
+  "started_at": "2026-11-21T18:43:39.065261+00:00",
+  "finished_at": "2026-11-21T18:44:15.118926+00:00",
   "python": "3.13.1 (tags/v3.13.1:0671451, Dec  3 2024, 19:06:28) [MSC v.1942 64 bit (AMD64)]",
   "platform": "Windows-11-10.0.26200-SP0",
   "steps": [
@@ -27,8 +27,8 @@
         "tests/acceptance"
       ],
       "exit_code": 0,
-      "started_at": "2026-11-21T18:32:56.111906+00:00",
-      "finished_at": "2026-11-21T18:32:56.366921+00:00",
+      "started_at": "2026-11-21T18:43:39.069484+00:00",
+      "finished_at": "2026-11-21T18:43:39.418855+00:00",
       "log": "validation/evidence/compile.log",
       "sha256": "99e46a9a6ccb51867c400f4ed92c00c915240660b8c7b052dfc6e51de40c2f10"
     },
@@ -41,8 +41,8 @@
         "check"
       ],
       "exit_code": 0,
-      "started_at": "2026-11-21T18:32:56.367089+00:00",
-      "finished_at": "2026-11-21T18:32:57.402913+00:00",
+      "started_at": "2026-11-21T18:43:39.419161+00:00",
+      "finished_at": "2026-11-21T18:43:40.789851+00:00",
       "log": "validation/evidence/dependencies.log",
       "sha256": "612ed3ae7c7eb3ccc0c075e9b39f9a64bdf25c5bc8b98c60c457862acb3b5299"
     },
@@ -53,10 +53,10 @@
         "scripts/verify.py"
       ],
       "exit_code": 0,
-      "started_at": "2026-11-21T18:32:57.403130+00:00",
-      "finished_at": "2026-11-21T18:33:12.907413+00:00",
+      "started_at": "2026-11-21T18:43:40.790165+00:00",
+      "finished_at": "2026-11-21T18:44:00.084335+00:00",
       "log": "validation/evidence/baseline.log",
-      "sha256": "872ae6eecab13ccda094a23eaccd25332eca447d3cd6731aa0d92a8a6818a7e9"
+      "sha256": "ef79c213399f4466d0217e56340ce1c9dae1b10cc7ee1a3cd491bd93aa718893"
     },
     {
       "name": "acceptance",
@@ -73,10 +73,10 @@
         "--junitxml=C:\\Users\\yang0\\Personal Agent Framework\\validation\\evidence\\acceptance.xml"
       ],
       "exit_code": 0,
-      "started_at": "2026-11-21T18:33:12.907607+00:00",
-      "finished_at": "2026-11-21T18:33:23.627901+00:00",
+      "started_at": "2026-11-21T18:44:00.084545+00:00",
+      "finished_at": "2026-11-21T18:44:15.034357+00:00",
       "log": "validation/evidence/acceptance.log",
-      "sha256": "508542e160a19cb28f083e2336c7f6fabbd8171ed21f785e91fd25cb943e12e5"
+      "sha256": "07fa6db942285d902254c1bc5a8059f7ff6e7f5ca8c70213194f1c49a456bd2c"
     }
   ],
   "cases": [
@@ -87,7 +87,7 @@
         {
           "node": "tests.acceptance.test_financial::test_F01_untruncated_analytics_invariant_to_max_tool_rows",
           "status": "PASS",
-          "seconds": "0.367"
+          "seconds": "0.502"
         }
       ]
     },
@@ -98,7 +98,7 @@
         {
           "node": "tests.acceptance.test_financial::test_F02_consistent_snapshot_read_and_non_overwriting_historical_import",
           "status": "PASS",
-          "seconds": "0.078"
+          "seconds": "0.121"
         }
       ]
     },
@@ -109,7 +109,7 @@
         {
           "node": "tests.acceptance.test_financial::test_F03_freshness_future_statement_missing_cash_and_empty_cash_only",
           "status": "PASS",
-          "seconds": "0.096"
+          "seconds": "0.156"
         }
       ]
     },
@@ -120,7 +120,7 @@
         {
           "node": "tests.acceptance.test_financial::test_F04_multicurrency_cash_flows_intermediate_dates_and_transfers",
           "status": "PASS",
-          "seconds": "0.082"
+          "seconds": "0.113"
         }
       ]
     },
@@ -131,7 +131,7 @@
         {
           "node": "tests.acceptance.test_financial::test_F05_xirr_same_day_multiple_roots_and_known_answer",
           "status": "PASS",
-          "seconds": "0.010"
+          "seconds": "0.012"
         }
       ]
     },
@@ -142,7 +142,7 @@
         {
           "node": "tests.acceptance.test_financial::test_F06_transaction_reducer_strict_validation",
           "status": "PASS",
-          "seconds": "0.054"
+          "seconds": "0.083"
         }
       ]
     },
@@ -153,7 +153,7 @@
         {
           "node": "tests.acceptance.test_financial::test_F07_account_buying_power_and_non_margin_tfsa",
           "status": "PASS",
-          "seconds": "0.064"
+          "seconds": "0.101"
         }
       ]
     },
@@ -164,7 +164,7 @@
         {
           "node": "tests.acceptance.test_financial::test_F08_option_delta_notional_zero_premium_and_invalid_greeks",
           "status": "PASS",
-          "seconds": "0.058"
+          "seconds": "0.089"
         }
       ]
     },
@@ -175,7 +175,7 @@
         {
           "node": "tests.acceptance.test_financial::test_F09_gross_leverage_hard_gate_across_accounts",
           "status": "PASS",
-          "seconds": "0.050"
+          "seconds": "0.077"
         }
       ]
     },
@@ -186,7 +186,7 @@
         {
           "node": "tests.acceptance.test_financial::test_F10_allocator_existing_cash_vs_new_contribution",
           "status": "PASS",
-          "seconds": "0.158"
+          "seconds": "0.242"
         }
       ]
     },
@@ -197,7 +197,7 @@
         {
           "node": "tests.acceptance.test_financial::test_F11_canadian_acb_pooled_split_dedup_and_fx",
           "status": "PASS",
-          "seconds": "0.053"
+          "seconds": "0.080"
         }
       ]
     },
@@ -208,7 +208,7 @@
         {
           "node": "tests.acceptance.test_financial::test_F12_pnl_bridge_and_option_attribution_units",
           "status": "PASS",
-          "seconds": "0.065"
+          "seconds": "0.097"
         }
       ]
     },
@@ -219,7 +219,7 @@
         {
           "node": "tests.acceptance.test_broker::test_B01_tws_adapter_callbacks_and_timeout",
           "status": "PASS",
-          "seconds": "0.073"
+          "seconds": "0.083"
         }
       ]
     },
@@ -230,7 +230,7 @@
         {
           "node": "tests.acceptance.test_broker::test_B02_partial_capture_never_marked_live_verified",
           "status": "PASS",
-          "seconds": "0.175"
+          "seconds": "0.195"
         }
       ]
     },
@@ -241,7 +241,7 @@
         {
           "node": "tests.acceptance.test_broker::test_B03_reconciliation_per_account_and_currency",
           "status": "PASS",
-          "seconds": "0.079"
+          "seconds": "0.187"
         }
       ]
     },
@@ -252,7 +252,7 @@
         {
           "node": "tests.acceptance.test_broker::test_B04_quote_reqid_9001_vs_conid_9001_and_sentinel_delta",
           "status": "PASS",
-          "seconds": "0.011"
+          "seconds": "0.012"
         }
       ]
     },
@@ -263,7 +263,7 @@
         {
           "node": "tests.acceptance.test_broker::test_B05_broker_enrichment_preserves_flex_and_updates_hash",
           "status": "PASS",
-          "seconds": "0.101"
+          "seconds": "0.156"
         }
       ]
     },
@@ -274,7 +274,7 @@
         {
           "node": "tests.acceptance.test_broker::test_B06_option_chain_qualification_and_staleness",
           "status": "PASS",
-          "seconds": "0.010"
+          "seconds": "0.014"
         }
       ]
     },
@@ -285,7 +285,7 @@
         {
           "node": "tests.acceptance.test_broker::test_B07_readonly_broker_contract_enforced",
           "status": "PASS",
-          "seconds": "0.010"
+          "seconds": "0.014"
         }
       ]
     },
@@ -296,7 +296,7 @@
         {
           "node": "tests.acceptance.test_research::test_C01_sync_filings_transport_populates_equity_and_pit_without_manual_inserts",
           "status": "PASS",
-          "seconds": "0.071"
+          "seconds": "0.113"
         }
       ]
     },
@@ -307,7 +307,7 @@
         {
           "node": "tests.acceptance.test_research::test_C02_comparative_prior_year_facts_same_fy_fp_retained",
           "status": "PASS",
-          "seconds": "0.074"
+          "seconds": "0.110"
         }
       ]
     },
@@ -318,7 +318,7 @@
         {
           "node": "tests.acceptance.test_research::test_C03_pit_selects_by_publication_time_not_insertion_order",
           "status": "PASS",
-          "seconds": "0.072"
+          "seconds": "0.107"
         }
       ]
     },
@@ -329,7 +329,7 @@
         {
           "node": "tests.acceptance.test_research::test_C04_ytd_differencing_and_component_availability",
           "status": "PASS",
-          "seconds": "0.075"
+          "seconds": "0.116"
         }
       ]
     },
@@ -340,7 +340,7 @@
         {
           "node": "tests.acceptance.test_research::test_C05_nonadditive_shares_and_bs_not_summed",
           "status": "PASS",
-          "seconds": "0.095"
+          "seconds": "0.141"
         }
       ]
     },
@@ -351,7 +351,7 @@
         {
           "node": "tests.acceptance.test_research::test_C06_non_contiguous_quarters_block_ttm",
           "status": "PASS",
-          "seconds": "0.090"
+          "seconds": "0.139"
         }
       ]
     },
@@ -362,7 +362,7 @@
         {
           "node": "tests.acceptance.test_research::test_C07_distinct_evidence_hashes_for_distinct_documents",
           "status": "PASS",
-          "seconds": "0.070"
+          "seconds": "0.107"
         }
       ]
     },
@@ -373,7 +373,7 @@
         {
           "node": "tests.acceptance.test_research::test_C08_dcf_golden_model_and_invalid_input_rejection",
           "status": "PASS",
-          "seconds": "0.010"
+          "seconds": "0.012"
         }
       ]
     },
@@ -384,7 +384,7 @@
         {
           "node": "tests.acceptance.test_research::test_C09_sector_valuation_methods_rim_and_sotp",
           "status": "PASS",
-          "seconds": "0.009"
+          "seconds": "0.012"
         }
       ]
     },
@@ -395,7 +395,7 @@
         {
           "node": "tests.acceptance.test_research::test_C10_e2e_sec_pipeline_to_auto_discovery",
           "status": "PASS",
-          "seconds": "0.087"
+          "seconds": "0.138"
         }
       ]
     },
@@ -406,7 +406,7 @@
         {
           "node": "tests.acceptance.test_research::test_C11_expectations_partial_actuals_and_forecast_pit",
           "status": "PASS",
-          "seconds": "0.135"
+          "seconds": "0.201"
         }
       ]
     },
@@ -417,7 +417,7 @@
         {
           "node": "tests.acceptance.test_research::test_C12_research_sec_forensics_missing_vs_cached",
           "status": "PASS",
-          "seconds": "0.075"
+          "seconds": "0.114"
         }
       ]
     },
@@ -428,7 +428,7 @@
         {
           "node": "tests.acceptance.test_workflow::test_W01_immutable_params_resume_and_reject_tamper",
           "status": "PASS",
-          "seconds": "0.191"
+          "seconds": "0.299"
         }
       ]
     },
@@ -439,7 +439,7 @@
         {
           "node": "tests.acceptance.test_workflow::test_W02_concurrent_approve_and_reject_race_single_journal",
           "status": "PASS",
-          "seconds": "0.306"
+          "seconds": "0.450"
         }
       ]
     },
@@ -450,7 +450,7 @@
         {
           "node": "tests.acceptance.test_workflow::test_W03_crash_recovery_after_claim_and_ttl_expiry",
           "status": "PASS",
-          "seconds": "0.636"
+          "seconds": "0.970"
         }
       ]
     },
@@ -461,7 +461,7 @@
         {
           "node": "tests.acceptance.test_workflow::test_W04_ic_memo_blocks_failed_allocator_or_blocked_gate",
           "status": "PASS",
-          "seconds": "1.067"
+          "seconds": "2.027"
         }
       ]
     },
@@ -472,7 +472,7 @@
         {
           "node": "tests.acceptance.test_workflow::test_W05_monitoring_dedup_alerts_and_scheduled_jobs",
           "status": "PASS",
-          "seconds": "0.062"
+          "seconds": "0.115"
         }
       ]
     },
@@ -483,7 +483,7 @@
         {
           "node": "tests.acceptance.test_workflow::test_W06_mcp_cli_and_public_surface_consistency",
           "status": "PASS",
-          "seconds": "0.021"
+          "seconds": "0.044"
         }
       ]
     },
@@ -494,7 +494,7 @@
         {
           "node": "tests.acceptance.test_security::test_S01_public_mcp_process_db_isolation_and_canary",
           "status": "PASS",
-          "seconds": "0.154"
+          "seconds": "0.238"
         }
       ]
     },
@@ -505,7 +505,7 @@
         {
           "node": "tests.acceptance.test_security::test_S02_local_privacy_routing_boundary",
           "status": "PASS",
-          "seconds": "0.011"
+          "seconds": "0.013"
         }
       ]
     },
@@ -516,7 +516,7 @@
         {
           "node": "tests.acceptance.test_security::test_S03_ssrf_blocks_loopback_private_ipv6_creds_and_redirects",
           "status": "PASS",
-          "seconds": "0.080"
+          "seconds": "0.117"
         }
       ]
     },
@@ -527,7 +527,7 @@
         {
           "node": "tests.acceptance.test_security::test_S04_knowledge_index_blocks_secrets_and_traversal",
           "status": "PASS",
-          "seconds": "0.045"
+          "seconds": "0.072"
         }
       ]
     },
@@ -538,7 +538,7 @@
         {
           "node": "tests.acceptance.test_quant::test_Q01_bars_open_close_provenance_and_atomic_backfill",
           "status": "PASS",
-          "seconds": "0.078"
+          "seconds": "0.115"
         }
       ]
     },
@@ -549,7 +549,7 @@
         {
           "node": "tests.acceptance.test_quant::test_Q02_backtest_next_bar_open_and_financing_cost_monotonicity",
           "status": "PASS",
-          "seconds": "0.062"
+          "seconds": "0.102"
         }
       ]
     },
@@ -560,7 +560,7 @@
         {
           "node": "tests.acceptance.test_quant::test_Q03_covariance_psd_and_stress_fx_consistency",
           "status": "PASS",
-          "seconds": "0.356"
+          "seconds": "0.168"
         }
       ]
     },
@@ -571,7 +571,7 @@
         {
           "node": "tests.acceptance.test_quant::test_Q04_etf_lookthrough_no_double_count_and_unallocated",
           "status": "PASS",
-          "seconds": "0.011"
+          "seconds": "0.013"
         }
       ]
     },
@@ -582,7 +582,7 @@
         {
           "node": "tests.acceptance.test_quant::test_Q05_bsm_iv_inversion_covered_call_and_roll_credit",
           "status": "PASS",
-          "seconds": "0.010"
+          "seconds": "0.012"
         }
       ]
     },
@@ -593,7 +593,7 @@
         {
           "node": "tests.acceptance.test_quant::test_Q06_cashflow_strategy_and_brier_learning_boundaries",
           "status": "PASS",
-          "seconds": "0.115"
+          "seconds": "0.180"
         }
       ]
     },
@@ -604,7 +604,7 @@
         {
           "node": "tests.acceptance.test_ops::test_O01_backup_and_restore_rehearsal_across_all_dbs",
           "status": "PASS",
-          "seconds": "0.222"
+          "seconds": "0.364"
         }
       ]
     },
@@ -615,7 +615,7 @@
         {
           "node": "tests.acceptance.test_ops::test_O02_shadow_readiness_fails_closed_for_stale_replay_or_blocked",
           "status": "PASS",
-          "seconds": "0.137"
+          "seconds": "0.240"
         }
       ]
     },
@@ -626,7 +626,7 @@
         {
           "node": "tests.acceptance.test_ops::test_O03_cli_error_exits_nonzero_and_eval_subprocess_isolation",
           "status": "PASS",
-          "seconds": "1.860"
+          "seconds": "2.226"
         }
       ]
     },
@@ -637,7 +637,7 @@
         {
           "node": "tests.acceptance.test_ops::test_O04_legacy_db_migration_idempotent",
           "status": "PASS",
-          "seconds": "0.043"
+          "seconds": "0.061"
         }
       ]
     },
@@ -648,13 +648,13 @@
         {
           "node": "tests.acceptance.test_ops::test_O05_cli_help_and_headless_dashboard_smoke",
           "status": "PASS",
-          "seconds": "0.573"
+          "seconds": "0.654"
         }
       ]
     }
   ],
   "extra_tests": [],
-  "junit_sha256": "cd7ec9ecdf1dda83370cc7f568d76b9c61b0f4cc499e47ae869fcb020e725a87",
+  "junit_sha256": "c3990b86925897e46a69a8349e55d7d6662db5553ef1fe8451017d7be22e4b9e",
   "mandatory_count": 52,
   "passed_count": 52,
   "baseline_success_marker": true,

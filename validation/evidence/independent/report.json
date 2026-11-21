@@ -1,6 +1,6 @@
 {
   "schema": "independent_real_scenarios.v1",
-  "repo_sha": "985bd63c06432bc25ae72a71e47bdf3cfa96a8a4",
+  "repo_sha": "740186956880ac74f03ccdcd912f0997cc586d99",
   "result": "SCENARIO_VERIFIED",
   "offline_only": true,
   "live_verified": false,
@@ -10,17 +10,17 @@
       "name": "baseline",
       "status": "PASS",
       "exit_code": 0,
-      "started_at": "2026-11-21T18:32:47.026620+00:00",
-      "finished_at": "2026-11-21T18:32:55.935261+00:00",
+      "started_at": "2026-11-21T18:43:27.057694+00:00",
+      "finished_at": "2026-11-21T18:43:38.822966+00:00",
       "log": "validation\\evidence\\independent\\baseline.log",
-      "sha256": "219fe19136aaa4b47ebd9da52d0c0ff12ad78aa4436bfeb6e150eb3cab0ac3c2"
+      "sha256": "cca8727c2d9d45d8e7b412c874561c006624aafde74747793c821602e9d21004"
     },
     {
       "name": "original_contract",
       "status": "PASS",
       "exit_code": 0,
-      "started_at": "2026-11-21T18:32:55.935560+00:00",
-      "finished_at": "2026-11-21T18:33:23.866241+00:00",
+      "started_at": "2026-11-21T18:43:38.823316+00:00",
+      "finished_at": "2026-11-21T18:44:15.323112+00:00",
       "log": "validation\\evidence\\independent\\original_contract.log",
       "sha256": "2e9aa16645a0ddba7de5aa53c59397140bfcda122181923051ec276ed62d2c2c"
     },
@@ -28,10 +28,19 @@
       "name": "independent_scenarios",
       "status": "PASS",
       "exit_code": 0,
-      "started_at": "2026-11-21T18:33:23.866508+00:00",
-      "finished_at": "2026-11-21T18:33:26.553299+00:00",
+      "started_at": "2026-11-21T18:44:15.323419+00:00",
+      "finished_at": "2026-11-21T18:44:18.973456+00:00",
       "log": "validation\\evidence\\independent\\independent_scenarios.log",
-      "sha256": "b6f6e697f64bfcccce4c8e1e74c60d913f76d316a4b3e135c7c97c708f4faf68"
+      "sha256": "2f660ff9101a892db70706482d9e9c605300b6b8873cb10e5645fd7114738c9c"
+    },
+    {
+      "name": "offline_workflows",
+      "status": "PASS",
+      "exit_code": 0,
+      "started_at": "2026-11-21T18:44:18.973880+00:00",
+      "finished_at": "2026-11-21T18:44:43.175050+00:00",
+      "log": "validation\\evidence\\independent\\offline_workflows.log",
+      "sha256": "1ebc21e5dab97723c7e9b86f74bc645d36978eb84ae31118a5578ecd029e3cf1"
     }
   ],
   "independent_scenarios": {
@@ -203,81 +212,81 @@
       }
     ]
   },
+  "offline_workflows": {
+    "total": 9,
+    "passed": 9,
+    "failed": 0,
+    "skipped": 0,
+    "errors": 0,
+    "cases": [
+      {
+        "id": "test_flex_import_snapshot_risk_trade_and_policy",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_recorded_sec_filings_pit_ttm_valuation_and_discovery",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_research_committee_approval_journal_and_restart",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_concurrent_approval_commits_one_journal",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_broker_callbacks_freshness_and_risk_fingerprint",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_scheduled_monitor_failure_retry_report_and_restore",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_shadow_and_live_gates_stay_external",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_broker_disconnect_retry_entitlement_and_stale_last_good",
+        "status": "PASS",
+        "details": ""
+      },
+      {
+        "id": "test_sec_filings_to_committee_decision_chain",
+        "status": "PASS",
+        "details": ""
+      }
+    ]
+  },
   "missing_scenarios": [],
   "source_suites": [
     "existing tests/acceptance",
-    "tests/independent/test_real_scenarios.py"
+    "tests/independent/test_real_scenarios.py",
+    "tests/independent/test_offline_workflows.py"
   ],
-  "limitations": [
-    "No authenticated TWS/IBKR connection is made.",
-    "Synthetic fixtures validate logic, not entitlement or real-market correctness.",
-    "Testing all 52 acceptance IDs semantically is a separate reviewer requirement.",
-    "A green run is not evidence of alpha or successful trading."
-  ],
-  "workflows": {
-    "suite": "tests/independent/test_offline_workflows.py",
-    "cases": 7,
-    "status": "PASS",
-    "junit": "validation/evidence/independent/scenarios-full.xml"
-  },
-  "data_provenance": {
-    "sec_fixtures": {
-      "MSFT": {
-        "path": "tests/fixtures/sec/MSFT_companyfacts.json",
-        "sha256": "8c1903c041f5c27e86ed15f37debb1f41882b7904bba129ef9edc76478b1e8ea",
-        "source": "https://data.sec.gov/api/xbrl/companyfacts/CIK0000789019.json",
-        "retrieved": "2026-11-21",
-        "note": "Public SEC CompanyFacts bytes; not a market-data entitlement"
-      },
-      "WMT": {
-        "path": "tests/fixtures/sec/WMT_companyfacts.json",
-        "sha256": "49330f98609f70fcef4054edc90bc811398a58c4bf26dc0b218d607967a8dbe4",
-        "source": "https://data.sec.gov/api/xbrl/companyfacts/CIK0000104169.json",
-        "retrieved": "2026-11-21",
-        "note": "Non-calendar fiscal year issuer; public SEC CompanyFacts bytes"
-      }
-    },
-    "broker_transport": "Fake TWS callback transport via IBKRTWSAdapter / sync_broker_replay; no live socket"
-  },
   "unresolved_blockers": [
     {
       "id": "G2_LIVE_IBKR",
       "status": "BLOCKED_EXTERNAL",
-      "severity": "mandatory_for_production",
-      "reason": "Real IBKR Gateway/TWS read-only connectivity was not executed in this offline session."
+      "reason": "Real IBKR Gateway/TWS read-only connectivity must be run on the operator machine."
     },
     {
       "id": "G3_SHADOW_20",
       "status": "BLOCKED_EXTERNAL",
-      "severity": "mandatory_for_production",
       "reason": "20 trading-session Shadow Mode has no operator session evidence."
     }
   ],
-  "numerical_oracles": {
-    "R14_option_delta_weight": {
-      "inputs": "qty=1,delta=0.5,mult=100,spot=100,fx=1.4,nav=10000",
-      "expected": 0.7,
-      "method": "1*0.5*100*100*1.4/10000"
-    },
-    "R25_gordon_dcf": {
-      "inputs": "FCF=100,wacc=0.10,g=0.02",
-      "expected": 1250.0,
-      "method": "100/(0.10-0.02)"
-    },
-    "R04_twr_after_contribution": {
-      "inputs": "start=10000,contrib=1000,end=11000",
-      "expected": 0.0,
-      "method": "external cash flow excluded from return"
-    }
-  },
-  "ci": {
-    "status": "PASS",
-    "url": "https://github.com/RyanYang053/IBKR-Agent-harness/actions/runs/44936395581",
-    "jobs": [
-      "independent-scenarios (ubuntu-latest)",
-      "independent-scenarios (windows-latest)",
-      "offline-gate (ubuntu-latest)",
-      "offline-gate (windows-latest)"
-    ]
-  }
+  "limitations": [
+    "No authenticated TWS/IBKR connection is made.",
+    "Synthetic fixtures validate logic, not entitlement or real-market correctness.",
+    "A green run is not evidence of alpha or successful trading."
+  ]
 }
