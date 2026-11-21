@@ -151,8 +151,9 @@ def knowledge_checks(home):
     th = quant.upsert_living_thesis('QQQ', 'Core index compounding;Secular tech margins', 'FCF margin;Cloud growth', 'Quarterly rebalance', 'margin collapse below 15%')
     triage = quant.triage_catalyst_event('QQQ', 'Company reports margin collapse below 15% and guidance cut')
     check('living thesis and L4 triage', th['version'] == 1 and triage['materiality_level'] == 'L4_decision_alert')
-    exp_gap = quant.record_earnings_expectation('QQQ', '2026Q4', 'management_guidance', exp_revenue=100, exp_eps=2.0, act_revenue=108, act_eps=2.25)
-    check('earnings expectation gap', exp_gap['verdict'] == 'positive_beat_and_raise' and exp_gap['revenue_surprise_pct'] == 0.08)
+    quant.record_earnings_expectation('QQQ', '2026Q4', 'management_guidance', exp_revenue=100, exp_eps=2.0)
+    exp_gap = quant.record_earnings_expectation('QQQ', '2026Q4', 'management_guidance', act_revenue=108, act_eps=2.25)
+    check('earnings expectation gap', exp_gap['verdict'] == 'positive_beat' and exp_gap['guidance_growth_delta'] is None and exp_gap['revenue_surprise_pct'] == 0.08)
     ic_wf = ops.run_workflow('investment_committee_memo', {'symbol': 'QQQ', 'amount_base': '250', 'revenue_t0': '1000', 'shares': '100'})
     check('investment committee 8-step workflow', ic_wf['status'] == 'awaiting_approval' and len(ic_wf['completed_steps']) == 7)
 

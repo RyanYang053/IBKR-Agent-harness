@@ -146,12 +146,23 @@ def latest_broker_snapshot():
         'orders':'disabled'
     }
 
+def _broker_age_seconds(as_of):
+    obs=datetime.fromisoformat(str(as_of))
+    if obs.tzinfo is None: obs=obs.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc)-obs.astimezone(timezone.utc)).total_seconds()
+
 def reconcile_live_to_flex():
     """Compare latest read-only broker snapshot against reconciled Flex PortfolioSnapshot without overwriting Flex."""
     flex_snap=load_full_portfolio_snapshot()
     brk=latest_broker_snapshot()
     if brk.get('status')!='ok':
         return {'status':'unavailable','flex_status':flex_snap.status,'broker_status':brk.get('status'),'reason':brk.get('reason','broker_offline'),'orders':'disabled'}
+    try:
+        age=_broker_age_seconds(brk.get('as_of'))
+    except (TypeError, ValueError):
+        age=None
+    if age is None or age>36*3600:
+        return {'status':'stale_broker_snapshot','flex_status':flex_snap.status,'flex_as_of':flex_snap.as_of,'broker_as_of':brk.get('as_of'),'broker_snapshot_id':brk.get('snapshot_id'),'age_seconds':age,'orders':'disabled','limitations':['A broker capture older than 36 hours is not a present-day reconciliation.']}
     if flex_snap.status in {'unavailable','not_configured','missing_accounts','date_mismatch'}:
         return {'status':'flex_unavailable','flex_status':flex_snap.status,'broker_snapshot_id':brk['snapshot_id'],'orders':'disabled'}
     acct_map=config().get('finance',{}).get('accounts') or {}
@@ -422,7 +433,14 @@ def enrich_snapshot_with_broker(csnap, max_age_seconds=300):
     new_accts=[]
     for a in csnap.accounts:
         ba=brk_accts.get(a.account) or {}
-        bp=dec(ba['BuyingPower']) if ba.get('BuyingPower') not in (None,'') else a.buying_power
+        bp=a.buying_power
+        if ba.get('BuyingPower') not in (None,''):
+            raw_bp=dec(ba['BuyingPower'])
+            bp_ccy=str(ba.get('currency') or '').upper()
+            if bp_ccy and bp_ccy==str(csnap.currency).upper():
+                bp=raw_bp
+            elif bp_ccy and ba.get('fx_rate_to_base') not in (None,'') and dec(ba.get('fx_rate_to_base'))>0:
+                bp=raw_bp*dec(ba['fx_rate_to_base'])
         new_accts.append(AccountRecord(account=a.account, tax_bucket=a.tax_bucket, nav=a.nav, cash=a.cash, allow_margin=a.allow_margin, buying_power=bp, source=a.source))
     new_pos=[]
     for p in csnap.positions:

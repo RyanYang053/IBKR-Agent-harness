@@ -40,11 +40,11 @@ class PositionRecord:
 def compute_snapshot_id(as_of, currency, accounts, positions):
     """Canonical SHA-256 snapshot fingerprint covering all account margin/cash fields and position/Greek/FX fields."""
     sid_payload={
-        'schema':'v0.3.3',
+        'schema':'v0.3.4',
         'as_of':as_of,
         'currency':currency,
         'accts':sorted((a.account,a.tax_bucket,str(a.nav.normalize()),str(a.cash.normalize()) if a.cash is not None else None,str(a.buying_power.normalize()) if a.buying_power is not None else None,a.allow_margin) for a in accounts),
-        'pos':sorted((p.account,p.conid,p.symbol,p.asset,str(p.quantity.normalize()),str(p.multiplier.normalize()),str(p.market_value_base.normalize()),str(p.underlying_price.normalize()) if p.underlying_price is not None else None,str(p.fx_rate_to_base.normalize()) if p.fx_rate_to_base is not None else None,str(p.delta.normalize()) if p.delta is not None else None) for p in positions)
+        'pos':sorted((p.account,p.conid,p.symbol,p.asset,str(p.quantity.normalize()),str(p.multiplier.normalize()),str(p.market_value_base.normalize()),p.underlying_conid,str(p.cost_basis.normalize()) if p.cost_basis is not None else None,str(p.underlying_price.normalize()) if p.underlying_price is not None else None,str(p.fx_rate_to_base.normalize()) if p.fx_rate_to_base is not None else None,str(p.delta.normalize()) if p.delta is not None else None) for p in positions)
     }
     return hashlib.sha256(json.dumps(sid_payload, sort_keys=True).encode('utf-8')).hexdigest()[:16]
 

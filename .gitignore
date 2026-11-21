@@ -23,6 +23,9 @@ config/investment_policy.json
 config/*.local.yml
 config/*.local.json
 
+# Test caches
+.hypothesis/
+
 # Editor & OS metadata
 .cursor/
 .vscode/
