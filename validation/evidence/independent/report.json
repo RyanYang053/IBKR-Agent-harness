@@ -1,46 +1,28 @@
 {
   "schema": "independent_real_scenarios.v1",
-  "repo_sha": "c72caab1bb469e7bc05c8f077ca154832bfdb61b",
+  "repo_sha": "8018cef1231c9b7a2f6df2d53931097a57d69989",
   "result": "SCENARIO_VERIFIED",
   "offline_only": true,
   "live_verified": false,
   "production_accepted": false,
   "steps": [
     {
-      "name": "baseline",
-      "status": "PASS",
-      "exit_code": 0,
-      "started_at": "2026-11-21T18:50:56.618019+00:00",
-      "finished_at": "2026-11-21T18:51:08.614923+00:00",
-      "log": "validation\\evidence\\independent\\baseline.log",
-      "sha256": "6b205f78a2e5d74665ded44de7fcde972bc2f48b40fca47c08237e35b8917061"
-    },
-    {
-      "name": "original_contract",
-      "status": "PASS",
-      "exit_code": 0,
-      "started_at": "2026-11-21T18:51:08.615191+00:00",
-      "finished_at": "2026-11-21T18:51:44.217517+00:00",
-      "log": "validation\\evidence\\independent\\original_contract.log",
-      "sha256": "2e9aa16645a0ddba7de5aa53c59397140bfcda122181923051ec276ed62d2c2c"
-    },
-    {
       "name": "independent_scenarios",
       "status": "PASS",
       "exit_code": 0,
-      "started_at": "2026-11-21T18:51:44.217997+00:00",
-      "finished_at": "2026-11-21T18:51:47.708419+00:00",
+      "started_at": "2026-11-21T18:54:29.651801+00:00",
+      "finished_at": "2026-11-21T18:54:33.643951+00:00",
       "log": "validation\\evidence\\independent\\independent_scenarios.log",
-      "sha256": "d633043389a1766efab7f27d3c903ea6dadce5146e1dc878f27def476576b5a2"
+      "sha256": "f43588f0c46e7f6a49240ea7208126da603ea51ca6ec1225561d52b2bf153ee4"
     },
     {
       "name": "offline_workflows",
       "status": "PASS",
       "exit_code": 0,
-      "started_at": "2026-11-21T18:51:47.708772+00:00",
-      "finished_at": "2026-11-21T18:52:13.384340+00:00",
+      "started_at": "2026-11-21T18:54:33.644781+00:00",
+      "finished_at": "2026-11-21T18:55:00.697744+00:00",
       "log": "validation\\evidence\\independent\\offline_workflows.log",
-      "sha256": "a72f7f5463a1089022c7a14a60ea0a7add52453ea564008a3e70b4a2f64929e1"
+      "sha256": "112d987a04e63c11f6554e3ac555da73a1bedd5592034af8fcef684dc900dfc6"
     }
   ],
   "independent_scenarios": {

@@ -40,4 +40,4 @@ tests/independent/test_real_scenarios.py::test_R31_real_approval_journal_has_exa
 tests/independent/test_real_scenarios.py::test_R32_offline_replay_cannot_certify_live_shadow_mode PASSED [100%]
 
 - generated xml file: C:\Users\yang0\Personal Agent Framework\validation\evidence\independent\scenarios.xml -
-============================= 32 passed in 2.65s ==============================
+============================= 32 passed in 3.10s ==============================

@@ -1,5 +1,5 @@
 COMMAND: "C:\Users\yang0\Personal Agent Framework\.venv-qa\Scripts\python.exe" scripts/verify.py
-2026-11-21 13:51:12.272 WARNING streamlit.runtime.scriptrunner_utils.script_run_context: Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+2026-11-21 13:53:43.336 WARNING streamlit.runtime.scriptrunner_utils.script_run_context: Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
 Processing request of type CallToolRequest
 Processing request of type ListToolsRequest
 Processing request of type CallToolRequest

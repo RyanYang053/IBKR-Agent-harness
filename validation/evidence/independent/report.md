@@ -1,6 +1,6 @@
 # Independent scenario QA — SCENARIO_VERIFIED
 
-Git SHA: `c72caab1bb469e7bc05c8f077ca154832bfdb61b`
+Git SHA: `8018cef1231c9b7a2f6df2d53931097a57d69989`
 Independent scenarios: 32/32 passed; 0 failed; 0 errors; 0 skipped.
 Offline workflows: 9/9 passed; 0 failed.
 
@@ -58,8 +58,6 @@ Offline workflows: 9/9 passed; 0 failed.
 
 ## Commands
 
-- `baseline`: PASS, log `validation\evidence\independent\baseline.log`
-- `original_contract`: PASS, log `validation\evidence\independent\original_contract.log`
 - `independent_scenarios`: PASS, log `validation\evidence\independent\independent_scenarios.log`
 - `offline_workflows`: PASS, log `validation\evidence\independent\offline_workflows.log`
 

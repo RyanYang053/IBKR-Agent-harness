@@ -1,6 +1,6 @@
 {
   "schema": "evidence_matrix.v1",
-  "git_sha": "c72caab1bb469e7bc05c8f077ca154832bfdb61b",
+  "git_sha": "8018cef1231c9b7a2f6df2d53931097a57d69989",
   "mandatory_acceptance_ids": 52,
   "missing_mandatory_ids": [],
   "missing_scenario_ids": [],
@@ -11,7 +11,7 @@
       "test": "test_B01_tws_adapter_callbacks_and_timeout",
       "classname": "tests.acceptance.test_broker",
       "status": "PASS",
-      "seconds": "0.194",
+      "seconds": "0.094",
       "independent_oracle": "Drive real IBKRTWSAdapter with fake EClient/EWrapper callback transport: out-of-order, duplicate, delayed, missing required tags and unknown accounts. Only complete configured accounts + valid positions with completion events yield verified",
       "source": "broker.py:186-288,339-365"
     },
@@ -21,7 +21,7 @@
       "test": "test_B02_partial_capture_never_marked_live_verified",
       "classname": "tests.acceptance.test_broker",
       "status": "PASS",
-      "seconds": "0.193",
+      "seconds": "0.213",
       "independent_oracle": "Fake timeout yields partial, persist and restart process: still partial, never enrich or pass readiness. Replayed matching NAV/positions never live. Successful capture followed by failure preserves last-good snapshot with correct stale/erro",
       "source": "broker.py:85-171,339-365"
     },
@@ -31,7 +31,7 @@
       "test": "test_B03_reconciliation_per_account_and_currency",
       "classname": "tests.acceptance.test_broker",
       "status": "PASS",
-      "seconds": "0.113",
+      "seconds": "0.132",
       "independent_oracle": "CAD1000 + USD1000 @1.4 => CAD2400; missing FX blocks. Opposite account NAV errors +100/-100 with equal combined NAV => not reconciled. Skip absent configured account, unknown currencies or stale/mismatched timestamps; detect missing cash/ma",
       "source": "broker.py:133-171,261-275"
     },
@@ -41,7 +41,7 @@
       "test": "test_B04_quote_reqid_9001_vs_conid_9001_and_sentinel_delta",
       "classname": "tests.acceptance.test_broker",
       "status": "PASS",
-      "seconds": "0.015",
+      "seconds": "0.023",
       "independent_oracle": "Inject request ID 9001 and contract conid 9001 for different contracts; never cross-associate. Missing/crossed/negative quotes, IB sentinel delta, delayed/frozen marketDataType, timeout, denied entitlement and no Greek callback => unavailab",
       "source": "broker.py:215-255,289-337"
     },
@@ -51,7 +51,7 @@
       "test": "test_B05_broker_enrichment_preserves_flex_and_updates_hash",
       "classname": "tests.acceptance.test_broker",
       "status": "PASS",
-      "seconds": "0.186",
+      "seconds": "0.167",
       "independent_oracle": "Use same Flex position and two valid broker snapshots with delta .2/.8, changed underlying/margin. Every current risk surface and optimizer uses same validated as-of snapshot; approval fingerprint changes; stale/replay/partial data cannot e",
       "source": "broker.py:366-391; quant.py:126-130,261-268,637-645; ops.py:221-222,778-816"
     },
@@ -61,7 +61,7 @@
       "test": "test_B06_option_chain_qualification_and_staleness",
       "classname": "tests.acceptance.test_broker",
       "status": "PASS",
-      "seconds": "0.014",
+      "seconds": "0.032",
       "independent_oracle": "Fake chain includes expiration/strike/trading class/multiplier, qualify supported contracts via contract details, obtain bid/ask/OI/Greeks where entitled, preserve timestamps. Missing OI or quote timestamp, stale > policy TTL, invalid no-ar",
       "source": "broker.py:289-353; cli.py:28,81; quant.py:998-1042"
     },
@@ -71,7 +71,7 @@
       "test": "test_B07_readonly_broker_contract_enforced",
       "classname": "tests.acceptance.test_broker",
       "status": "PASS",
-      "seconds": "0.015",
+      "seconds": "0.028",
       "independent_oracle": "Clean install documented broker extras/config; fake API imported successfully, test connection failure distinct from missing dependency. Allowlist official read-only requests; verify no order-capable tool/CLI path; real TWS read-only settin",
       "source": "broker.py:186-252; pyproject.toml; config/harness-mcp.example.yml"
     },
@@ -81,7 +81,7 @@
       "test": "test_F01_untruncated_analytics_invariant_to_max_tool_rows",
       "classname": "tests.acceptance.test_financial",
       "status": "PASS",
-      "seconds": "0.702",
+      "seconds": "1.103",
       "independent_oracle": "Import 55 positions on two accounts, then change max_tool_rows from 1 to 50. Exposure, shock, attribution, factor risk, pre-trade, optimizer, tax totals and approval fingerprints must be invariant. Only display pages differ; combined and pe",
       "source": "finance.py:152-202; decision.py:9-58,130-188,505-624"
     },
@@ -91,7 +91,7 @@
       "test": "test_F02_consistent_snapshot_read_and_non_overwriting_historical_import",
       "classname": "tests.acceptance.test_financial",
       "status": "PASS",
-      "seconds": "0.138",
+      "seconds": "0.124",
       "independent_oracle": "Use separate SQLite connections, barrier after first SELECT, commit replacement snapshot before second SELECT. Reader returns all-old or all-new, never hybrid. Import newer statement then older overlapping report for another end date; newer",
       "source": "finance.py:83-202; core.py:28-40"
     },
@@ -101,7 +101,7 @@
       "test": "test_F03_freshness_future_statement_missing_cash_and_empty_cash_only",
       "classname": "tests.acceptance.test_financial",
       "status": "PASS",
-      "seconds": "0.130",
+      "seconds": "0.154",
       "independent_oracle": "Freeze Toronto time: future report rejected; weekend/holiday last valid close accepted under documented calendar policy; missing required position section, mismatched sources, missing cash, nonfinite values, duplicate account/contract or un",
       "source": "finance.py:55-69,83-202,445-522"
     },
@@ -111,7 +111,7 @@
       "test": "test_F04_multicurrency_cash_flows_intermediate_dates_and_transfers",
       "classname": "tests.acceptance.test_financial",
       "status": "PASS",
-      "seconds": "0.125",
+      "seconds": "0.135",
       "independent_oracle": "CAD 1000 opening, USD100 contribution at 1.4, CAD1140 closing: TWR 0. Same contribution between two NAV dates: 0. Missing FX or unknown currency blocks; internal +100.00/-100 across accounts yields 0 external; unmatched/ambiguous legs block",
       "source": "finance.py:281-407"
     },
@@ -121,7 +121,7 @@
       "test": "test_F05_xirr_same_day_multiple_roots_and_known_answer",
       "classname": "tests.acceptance.test_financial",
       "status": "PASS",
-      "seconds": "0.021",
+      "seconds": "0.019",
       "independent_oracle": "Equal +100/-100 same-day => undefined, not -99%; annual -100,+230,-132 => multiple roots including 10% and 20%, return ambiguous/None; -100,+110 one year => 10% within 1e-6. Missing daily bars must suppress or correctly resample daily risk.",
       "source": "finance.py:343-407; decision.py:59-89"
     },
@@ -131,7 +131,7 @@
       "test": "test_F06_transaction_reducer_strict_validation",
       "classname": "tests.acceptance.test_financial",
       "status": "PASS",
-      "seconds": "0.078",
+      "seconds": "0.083",
       "independent_oracle": "BUY 10 shares at CAD100 with amount CAD500 => reject inconsistent values; invalid side, negative fee, NaN, nonpositive price, absent account/conid in executable plan => reject. Sell 11 of 10 and cover 2 of short 1 reject unless supported di",
       "source": "quant.py:544-636"
     },
@@ -141,7 +141,7 @@
       "test": "test_F07_account_buying_power_and_non_margin_tfsa",
       "classname": "tests.acceptance.test_financial",
       "status": "PASS",
-      "seconds": "0.111",
+      "seconds": "0.128",
       "independent_oracle": "TFSA cash CAD100, buy CAD100 fee1 => block; cash unknown => block; margin account buying power CAD250 buy CAD300 => block; unavailable broker margin fields => no executable margin plan. A configured TFSA cannot be overridden into margin by ",
       "source": "quant.py:544-636; finance.py:13-50"
     },
@@ -151,7 +151,7 @@
       "test": "test_F08_option_delta_notional_zero_premium_and_invalid_greeks",
       "classname": "tests.acceptance.test_financial",
       "status": "PASS",
-      "seconds": "0.095",
+      "seconds": "0.108",
       "independent_oracle": "Existing 1 USD call, premium 5, spot100, delta .5, mult100, FX1.4, NAV CAD10000 => economic weight .70; buy 1 with consistent USD premium => 1.40; even premium=0 with qty=1 => .70. Adjusted mult10 => .07; short put sign correct; close to qt",
       "source": "quant.py:126-260,544-636"
     },
@@ -161,7 +161,7 @@
       "test": "test_F09_gross_leverage_hard_gate_across_accounts",
       "classname": "tests.acceptance.test_financial",
       "status": "PASS",
-      "seconds": "0.069",
+      "seconds": "0.079",
       "independent_oracle": "Gross 160% at limit 135% => hard violation in all plan paths and diagnostic audit severity. +8000/-8000 at NAV10000 => gross160%, net0. Unknown asset class and empty positions on incomplete ledger cannot imply zero risk. Single-stock, tacti",
       "source": "quant.py:126-260,544-636"
     },
@@ -171,7 +171,7 @@
       "test": "test_F10_allocator_existing_cash_vs_new_contribution",
       "classname": "tests.acceptance.test_financial",
       "status": "PASS",
-      "seconds": "0.285",
+      "seconds": "0.259",
       "independent_oracle": "Use NAV10000, cash1000 and BUY500 from existing cash: NAV unchanged except fees, cash500; external contribution500 then buy500 => NAV10500 cash1000. Full account-specific plan for both. Total allocated+retained=new funds exactly to cent; re",
       "source": "quant.py:637-820; decision.py:625-733; ops.py:431-476"
     },
@@ -181,7 +181,7 @@
       "test": "test_F11_canadian_acb_pooled_split_dedup_and_fx",
       "classname": "tests.acceptance.test_financial",
       "status": "PASS",
-      "seconds": "0.081",
+      "seconds": "0.299",
       "independent_oracle": "Two taxable accounts holding identical stock 10+10 at CAD10+20 => pooled ACB300, 2:1 split reported in both accounts => 40 units, ACB300, not 80. Sell 10 at CAD12 => proceeds120, relieved75, gain45 before fee. Third-currency commission requ",
       "source": "decision.py:919-987"
     },
@@ -191,7 +191,7 @@
       "test": "test_F12_pnl_bridge_and_option_attribution_units",
       "classname": "tests.acceptance.test_financial",
       "status": "PASS",
-      "seconds": "0.133",
+      "seconds": "0.094",
       "independent_oracle": "1000 opening +100 external +30 independently marked market P&L +14 CAD dividend -7 CAD commissions =1137 close. USD fees/dividend converted at dated FX; absent conversion blocks. One option bought $5/share and sold $6/share x100 => USD100 n",
       "source": "decision.py:804-918,1032-1070; finance.py:227-236"
     },
@@ -201,7 +201,7 @@
       "test": "test_O01_backup_and_restore_rehearsal_across_all_dbs",
       "classname": "tests.acceptance.test_ops",
       "status": "PASS",
-      "seconds": "0.276",
+      "seconds": "0.260",
       "independent_oracle": "Backup during approval commit and import using quiescence or consistent generation; restore all expected databases to separate temp root, verify SQLite integrity and logical invariants (journal/run links, row counts, hashes) and restore con",
       "source": "core.py:28-40,51-89"
     },
@@ -211,7 +211,7 @@
       "test": "test_O02_shadow_readiness_fails_closed_for_stale_replay_or_blocked",
       "classname": "tests.acceptance.test_ops",
       "status": "PASS",
-      "seconds": "0.216",
+      "seconds": "0.202",
       "independent_oracle": "Table-driven: stale ledger, stale/partial/replay broker, wrong account, invalid mandatory risk, hard breach (AUDIT mode), stale eval from old source, stuck intent, backup failure each blocks readiness. Fully valid synthetic readiness can on",
       "source": "ops.py:778-816; broker.py:114-171"
     },
@@ -221,7 +221,7 @@
       "test": "test_O03_cli_error_exits_nonzero_and_eval_subprocess_isolation",
       "classname": "tests.acceptance.test_ops",
       "status": "PASS",
-      "seconds": "2.979",
+      "seconds": "3.513",
       "independent_oracle": "Inject failure at every stage and connection never ending; scheduler reports specific stage/exit status, preserves previous valid report and logs redacted error; retry with backoff/idempotence. No credentials => explicit blocked, not succes",
       "source": "scripts/daily-sync.ps1; cli.py:96-114; market.py:655-695"
     },
@@ -231,7 +231,7 @@
       "test": "test_O04_legacy_db_migration_idempotent",
       "classname": "tests.acceptance.test_ops",
       "status": "PASS",
-      "seconds": "0.057",
+      "seconds": "0.064",
       "independent_oracle": "Keep baseline verify and Golden Evals; add mandatory tests named by this manifest and run through gate runner. No skip/xfail/only mocks of production function. Test previous DB schema migration twice, rollback on migration error, Windows an",
       "source": "scripts/verify.py:11-14,420-464,467-504; .github/workflows/ci.yml"
     },
@@ -241,7 +241,7 @@
       "test": "test_O05_cli_help_and_headless_dashboard_smoke",
       "classname": "tests.acceptance.test_ops",
       "status": "PASS",
-      "seconds": "0.919",
+      "seconds": "1.208",
       "independent_oracle": "Reproducible install from clean environment; pin supported Python and dependency ranges/lock, pip check, no secret config required for offline mode. CLI help/config checks, headless UI, long explicit local workflow with timeout, disconnect/",
       "source": "pyproject.toml; dashboard.py; scripts/open-agent.ps1; config/personal.example.json"
     },
@@ -251,7 +251,7 @@
       "test": "test_Q01_bars_open_close_provenance_and_atomic_backfill",
       "classname": "tests.acceptance.test_quant",
       "status": "PASS",
-      "seconds": "0.424",
+      "seconds": "0.120",
       "independent_oracle": "Bars missing open => no claimed next-open fill; use explicit alternative or block. Fake provider returns empty/truncated/duplicate/out-of-order rows; verify quality status and safe fallback; atomic staged replacement preserves last-good on ",
       "source": "market.py:211-274,680-695"
     },
@@ -261,7 +261,7 @@
       "test": "test_Q02_backtest_next_bar_open_and_financing_cost_monotonicity",
       "classname": "tests.acceptance.test_quant",
       "status": "PASS",
-      "seconds": "0.083",
+      "seconds": "0.102",
       "independent_oracle": "Freeze 60-day hand-computable path, same initial/cash contributions at explicit dates, fees and idle yield. Signal closing day t executes next valid open t+1. Flat underlying no fees yields exact contributions + documented cash yield. 3x tw",
       "source": "quant.py:893-973,1087-1131"
     },
@@ -271,7 +271,7 @@
       "test": "test_Q03_covariance_psd_and_stress_fx_consistency",
       "classname": "tests.acceptance.test_quant",
       "status": "PASS",
-      "seconds": "0.155",
+      "seconds": "0.207",
       "independent_oracle": "Use known correlated return series; PSD covariance and correct sample alignment, CAD FX converted (USD +10%, FX -10% => CAD -1%). Constant/short data => no precise beta/Sharpe; clearly mark priors. Marginal contributions sum under model; op",
       "source": "quant.py:265-315,637-820; decision.py:505-624"
     },
@@ -281,7 +281,7 @@
       "test": "test_Q04_etf_lookthrough_no_double_count_and_unallocated",
       "classname": "tests.acceptance.test_quant",
       "status": "PASS",
-      "seconds": "0.019",
+      "seconds": "0.022",
       "independent_oracle": "QQQ weight50%, constituent A20%; direct A10% => A total20%. Unknown ETF or residual reported unallocated; sums above 100% reject unless documented leveraged net/gross methodology; snapshot date/source and stale cutoff. TQQQ economic lookthr",
       "source": "quant.py:974-997"
     },
@@ -291,7 +291,7 @@
       "test": "test_Q05_bsm_iv_inversion_covered_call_and_roll_credit",
       "classname": "tests.acceptance.test_quant",
       "status": "PASS",
-      "seconds": "0.018",
+      "seconds": "0.020",
       "independent_oracle": "Independent BSM call/put reference, parity for European no-dividend, N(d2) distinct from delta, IV invert within tolerance. Invalid premium > spot and NaN => no payoff recommendation. For 1 covered call strike110 premium2 cost100, expiry sp",
       "source": "quant.py:824-892,998-1042"
     },
@@ -301,7 +301,7 @@
       "test": "test_Q06_cashflow_strategy_and_brier_learning_boundaries",
       "classname": "tests.acceptance.test_quant",
       "status": "PASS",
-      "seconds": "0.149",
+      "seconds": "0.179",
       "independent_oracle": "Cash-flow-matched QQQ/passive vs active, common dates/costs, separate train and test with frozen parameters, report sample size/drawdown and representative crisis windows; no claims of alpha from synthetic. Forecast outcome resolution must ",
       "source": "quant.py:893-973,1087-1131; knowledge.py:237-270"
     },
@@ -311,7 +311,7 @@
       "test": "test_C01_sync_filings_transport_populates_equity_and_pit_without_manual_inserts",
       "classname": "tests.acceptance.test_research",
       "status": "PASS",
-      "seconds": "0.096",
+      "seconds": "0.110",
       "independent_oracle": "Replay real saved unmodified SEC CompanyFacts responses for non-calendar mature tech and second issuer; through sync_filings transport only, no direct DB inserts. Produce Revenue, EBIT, OCF, CapEx, equity, cash, current+noncurrent debt and ",
       "source": "market.py:371-490; scripts/verify.py:420-459"
     },
@@ -321,7 +321,7 @@
       "test": "test_C02_comparative_prior_year_facts_same_fy_fp_retained",
       "classname": "tests.acceptance.test_research",
       "status": "PASS",
-      "seconds": "0.105",
+      "seconds": "0.121",
       "independent_oracle": "Same 2026-Q2 filing emits current quarter 120 and prior-year comparison 90 with same fy/fp but different start/end. Map to distinct fiscal periods using explicit fiscal calendar/accession; retain both. Include 52/53-week fiscal year and qua",
       "source": "market.py:422-488"
     },
@@ -331,7 +331,7 @@
       "test": "test_C03_pit_selects_by_publication_time_not_insertion_order",
       "classname": "tests.acceptance.test_research",
       "status": "PASS",
-      "seconds": "0.105",
+      "seconds": "0.113",
       "independent_oracle": "Import Aug revision value120 first, May original100 second; as-of June=>100, September=>120. Import reverse order and repeat => same results and no duplicate exact source facts. Preserve accessions and legitimate revisions, no future timest",
       "source": "market.py:379-388,905-921"
     },
@@ -341,7 +341,7 @@
       "test": "test_C04_ytd_differencing_and_component_availability",
       "classname": "tests.acceptance.test_research",
       "status": "PASS",
-      "seconds": "0.109",
+      "seconds": "0.122",
       "independent_oracle": "Q1=100 Feb; H1=210 May; Q1 restated110 Aug; 9M=330 Aug; FY=460 Nov. As-of June Q2=110, no Aug data; later recompute compatible history or mark conflict, preserve old vintage. Q3 standalone120 and Q4=130 with compatible inputs; each derived ",
       "source": "market.py:445-488"
     },
@@ -351,7 +351,7 @@
       "test": "test_C05_nonadditive_shares_and_bs_not_summed",
       "classname": "tests.acceptance.test_research",
       "status": "PASS",
-      "seconds": "0.130",
+      "seconds": "0.142",
       "independent_oracle": "FY diluted weighted shares100, 9M diluted weighted shares100 => Q4 weighted shares100 if legitimate day-weighted derivation, not0. EPS FY 4, nine-month3 not automatically valid Q4 EPS unless earnings/shares and method support derivation. Ex",
       "source": "market.py:390-488,923-953"
     },
@@ -361,7 +361,7 @@
       "test": "test_C06_non_contiguous_quarters_block_ttm",
       "classname": "tests.acceptance.test_research",
       "status": "PASS",
-      "seconds": "0.125",
+      "seconds": "0.137",
       "independent_oracle": "Quarters 2025Q4,2026Q1,Q2,Q4 without Q3 => TTM blocked. Mixed currencies or units => convert with evidence or block. Missing equity/net debt/growth/dilution => insufficient, never silently zero. Verify four contiguous OCF/capex revenues and",
       "source": "market.py:923-986"
     },
@@ -371,7 +371,7 @@
       "test": "test_C07_distinct_evidence_hashes_for_distinct_documents",
       "classname": "tests.acceptance.test_research",
       "status": "PASS",
-      "seconds": "0.098",
+      "seconds": "0.102",
       "independent_oracle": "Two different source documents for same ticker produce distinct content SHA; facts link to exact document/field and period; historical as-of does not reference later-retrieved unsupported evidence. No fabricated values, source IDs or consen",
       "source": "market.py:863-953,955-986; decision.py:989-1031"
     },
@@ -381,7 +381,7 @@
       "test": "test_C08_dcf_golden_model_and_invalid_input_rejection",
       "classname": "tests.acceptance.test_research",
       "status": "PASS",
-      "seconds": "0.016",
+      "seconds": "0.020",
       "independent_oracle": "Independent golden model FCFF100 perpetual g2%, WACC10% => EV1250 when 100 is next-period FCFF; subtract debt200, shares10 =>105/share. Driver model yearly rows reproduce revenue/NOPAT/reinvestment/PV and probability sum=1. Verify monotonic",
       "source": "quant.py:339-418; decision.py:91-114,418-504"
     },
@@ -391,7 +391,7 @@
       "test": "test_C09_sector_valuation_methods_rim_and_sotp",
       "classname": "tests.acceptance.test_research",
       "status": "PASS",
-      "seconds": "0.019",
+      "seconds": "0.022",
       "independent_oracle": "For bank, profitable software, semi-cycle, pre-profit early stage and diversified issuer, output suitable method + supported model or explicit unsupported (no forced generic FCFF; no confident plan). WACC debt/equity weights and after-tax d",
       "source": "quant.py:339-418,1043-1086; decision.py:989-1031"
     },
@@ -401,7 +401,7 @@
       "test": "test_C10_e2e_sec_pipeline_to_auto_discovery",
       "classname": "tests.acceptance.test_research",
       "status": "PASS",
-      "seconds": "0.134",
+      "seconds": "0.141",
       "independent_oracle": "Use C01 pipeline fixtures only and frozen valuation/price dates: qualified cheap company yields candidate; expensive yields no compelling; missing half the universe reports coverage and partial/insufficient; stale price or missing share cou",
       "source": "decision.py:989-1031; market.py:955-986"
     },
@@ -411,7 +411,7 @@
       "test": "test_C11_expectations_partial_actuals_and_forecast_pit",
       "classname": "tests.acceptance.test_research",
       "status": "PASS",
-      "seconds": "0.177",
+      "seconds": "0.202",
       "independent_oracle": "Freeze time. Expectation created after exact release time or same-call first expectation+actuals => rejected or retrospective/non-scored. Partial actuals merge preserving prior ones; missing guidance cannot label beat-and-raise. Forecast ca",
       "source": "quant.py:483-543; knowledge.py:237-270"
     },
@@ -421,7 +421,7 @@
       "test": "test_C12_research_sec_forensics_missing_vs_cached",
       "classname": "tests.acceptance.test_research",
       "status": "PASS",
-      "seconds": "0.106",
+      "seconds": "0.121",
       "independent_oracle": "Run source-backed memo for one real cached issuer and a missing-data issuer. Every material claim/source input traceable; distinguish fact/inference/assumption; real contrary evidence and null case, event dates, risk and quantifiable thesis",
       "source": "decision.py:218-258,733-803; market.py:521-639"
     },
@@ -431,7 +431,7 @@
       "test": "test_S01_public_mcp_process_db_isolation_and_canary",
       "classname": "tests.acceptance.test_security",
       "status": "PASS",
-      "seconds": "0.201",
+      "seconds": "0.226",
       "independent_oracle": "Create private canaries in finance/knowledge/ops, private watchlist, logs, raw Flex and credentials. Run public research process with distinct home/config and access guard: every tool, default quote universe, malicious path/URL and public k",
       "source": "server.py:6-45,218-246; core.py:9-40; config/harness-mcp.example.yml"
     },
@@ -441,7 +441,7 @@
       "test": "test_S02_local_privacy_routing_boundary",
       "classname": "tests.acceptance.test_security",
       "status": "PASS",
-      "seconds": "0.022",
+      "seconds": "0.030",
       "independent_oracle": "Use fake local/cloud/web endpoints; private conversation containing canary or tool result attempting remote model/web exfiltration never reaches external endpoint. Route public research separately with sanitized explicitly allowed input. Lo",
       "source": "config/harness-mcp.example.yml:1-120; market.py:748-833"
     },
@@ -451,7 +451,7 @@
       "test": "test_S03_ssrf_blocks_loopback_private_ipv6_creds_and_redirects",
       "classname": "tests.acceptance.test_security",
       "status": "PASS",
-      "seconds": "0.122",
+      "seconds": "0.156",
       "independent_oracle": "Use fake resolver/transport only: public DNS first then loopback on connect, redirect to link-local/private/IPv6, localhost variants, credentials, non-http, proxy bypass and oversized response. Deny before private connection. Resolve/pin va",
       "source": "market.py:734-833"
     },
@@ -461,7 +461,7 @@
       "test": "test_S04_knowledge_index_blocks_secrets_and_traversal",
       "classname": "tests.acceptance.test_security",
       "status": "PASS",
-      "seconds": "0.068",
+      "seconds": "0.096",
       "independent_oracle": "Test allowed root and symlink/reparse escape, secrets by content and filename, restricted directory/file access, scrubbed logs, no raw real account files or keys in staged/git artifacts. Local file indexing allowlist and user-approved memor",
       "source": "core.py:24-40,51-89; knowledge.py:30-62; .gitignore"
     },
@@ -471,7 +471,7 @@
       "test": "test_W01_immutable_params_resume_and_reject_tamper",
       "classname": "tests.acceptance.test_workflow",
       "status": "PASS",
-      "seconds": "0.272",
+      "seconds": "0.297",
       "independent_oracle": "Crash at every workflow checkpoint, restart same inputs and workflow version; exactly one logical run, preserved immutable params and input hash. Modified input/version or unapproved source changes => restart required. Two resume requests c",
       "source": "ops.py:193-260,477-495"
     },
@@ -481,7 +481,7 @@
       "test": "test_W02_concurrent_approve_and_reject_race_single_journal",
       "classname": "tests.acceptance.test_workflow",
       "status": "PASS",
-      "seconds": "0.378",
+      "seconds": "0.455",
       "independent_oracle": "Use barriers and 10 concurrent approve requests plus reject. Initial live owner lease prevents recovery; expired owner cannot finalize. Exactly one journal row per run, same immutable payload/note, one terminal state. Force original owner t",
       "source": "ops.py:511-629; knowledge.py:116-137"
     },
@@ -491,7 +491,7 @@
       "test": "test_W03_crash_recovery_after_claim_and_ttl_expiry",
       "classname": "tests.acceptance.test_workflow",
       "status": "PASS",
-      "seconds": "0.854",
+      "seconds": "1.245",
       "independent_oracle": "Kill a worker after intent claim, after journal commit, after decision mark, before workflow completion; recover with no duplicates, journal and workflow state converge. Invalid/missing timestamp blocks. TTL uses original staging time, not ",
       "source": "ops.py:511-647"
     },
@@ -501,7 +501,7 @@
       "test": "test_W04_ic_memo_blocks_failed_allocator_or_blocked_gate",
       "classname": "tests.acceptance.test_workflow",
       "status": "PASS",
-      "seconds": "1.845",
+      "seconds": "2.409",
       "independent_oracle": "Inject missing financials/DCF, failed allocator, blocked risk, empty thesis breaker, contradictory evidence separately: no accepted trade plan. Complete evidence + validated valuation + explicit funding source/account + policy-pass + altern",
       "source": "ops.py:431-476,571-590; decision.py:625-733"
     },
@@ -511,7 +511,7 @@
       "test": "test_W05_monitoring_dedup_alerts_and_scheduled_jobs",
       "classname": "tests.acceptance.test_workflow",
       "status": "PASS",
-      "seconds": "0.073",
+      "seconds": "0.082",
       "independent_oracle": "Replay earnings/news material event, changed thesis KPI and duplicate event; one dedup alert, updated severity/details and re-open on material change. Trigger required research/review, not automatic trade. Re-run same schedule window idempo",
       "source": "ops.py:751-827; scripts/daily-sync.ps1; cli.py:81-114"
     },
@@ -521,7 +521,7 @@
       "test": "test_W06_mcp_cli_and_public_surface_consistency",
       "classname": "tests.acceptance.test_workflow",
       "status": "PASS",
-      "seconds": "0.028",
+      "seconds": "0.034",
       "independent_oracle": "Real MCP stdio and CLI, Streamlit headless tests: portfolio, risk, ACB, discovery, evidence/valuation, alerts, approvals/resume, health, broker sync accessible through appropriate authorized surface; consistent results/status. CLI invalid o",
       "source": "server.py; dashboard.py; cli.py; ops.py"
     },
@@ -531,7 +531,7 @@
       "test": "test_flex_import_snapshot_risk_trade_and_policy",
       "classname": "tests.independent.test_offline_workflows",
       "status": "PASS",
-      "seconds": "0.903",
+      "seconds": "0.916",
       "independent_oracle": "",
       "source": ""
     },
@@ -541,7 +541,7 @@
       "test": "test_recorded_sec_filings_pit_ttm_valuation_and_discovery",
       "classname": "tests.independent.test_offline_workflows",
       "status": "PASS",
-      "seconds": "0.671",
+      "seconds": "0.797",
       "independent_oracle": "",
       "source": ""
     },
@@ -551,7 +551,7 @@
       "test": "test_research_committee_approval_journal_and_restart",
       "classname": "tests.independent.test_offline_workflows",
       "status": "PASS",
-      "seconds": "2.338",
+      "seconds": "2.528",
       "independent_oracle": "",
       "source": ""
     },
@@ -561,7 +561,7 @@
       "test": "test_concurrent_approval_commits_one_journal",
       "classname": "tests.independent.test_offline_workflows",
       "status": "PASS",
-      "seconds": "0.374",
+      "seconds": "0.381",
       "independent_oracle": "",
       "source": ""
     },
@@ -571,7 +571,7 @@
       "test": "test_broker_callbacks_freshness_and_risk_fingerprint",
       "classname": "tests.independent.test_offline_workflows",
       "status": "PASS",
-      "seconds": "16.365",
+      "seconds": "16.045",
       "independent_oracle": "",
       "source": ""
     },
@@ -581,7 +581,7 @@
       "test": "test_scheduled_monitor_failure_retry_report_and_restore",
       "classname": "tests.independent.test_offline_workflows",
       "status": "PASS",
-      "seconds": "2.730",
+      "seconds": "2.081",
       "independent_oracle": "",
       "source": ""
     },
@@ -591,7 +591,7 @@
       "test": "test_shadow_and_live_gates_stay_external",
       "classname": "tests.independent.test_offline_workflows",
       "status": "PASS",
-      "seconds": "0.547",
+      "seconds": "0.525",
       "independent_oracle": "",
       "source": ""
     },
@@ -601,7 +601,7 @@
       "test": "test_broker_disconnect_retry_entitlement_and_stale_last_good",
       "classname": "tests.independent.test_offline_workflows",
       "status": "PASS",
-      "seconds": "0.696",
+      "seconds": "0.627",
       "independent_oracle": "",
       "source": ""
     },
@@ -611,7 +611,7 @@
       "test": "test_sec_filings_to_committee_decision_chain",
       "classname": "tests.independent.test_offline_workflows",
       "status": "PASS",
-      "seconds": "1.205",
+      "seconds": "1.282",
       "independent_oracle": "",
       "source": ""
     },
@@ -621,7 +621,7 @@
       "test": "test_R01_full_120_position_snapshot_not_ui_truncated",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.081",
+      "seconds": "0.083",
       "independent_oracle": "120 holdings remain after max_tool_rows=1; advice uses full snapshot",
       "source": ""
     },
@@ -631,7 +631,7 @@
       "test": "test_R02_account_statement_date_mismatch_blocks_advice",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.074",
+      "seconds": "0.070",
       "independent_oracle": "date_mismatch blocks advice_allowed",
       "source": ""
     },
@@ -641,7 +641,7 @@
       "test": "test_R03_unknown_foreign_cash_flow_requires_explicit_fx",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.020",
+      "seconds": "0.016",
       "independent_oracle": "missing FX on foreign cash flow fails closed",
       "source": ""
     },
@@ -651,7 +651,7 @@
       "test": "test_R04_cash_contribution_is_not_investment_profit",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.094",
+      "seconds": "0.085",
       "independent_oracle": "NAV rise equal to contribution => TWR 0",
       "source": ""
     },
@@ -661,7 +661,7 @@
       "test": "test_R05_unmatched_transfer_must_block_combined_returns",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.103",
+      "seconds": "0.090",
       "independent_oracle": "unmatched transfer blocks combined returns",
       "source": ""
     },
@@ -681,7 +681,7 @@
       "test": "test_R07_unknown_margin_buying_power_blocks_new_borrowing",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.019",
+      "seconds": "0.017",
       "independent_oracle": "unknown margin buying_power blocks borrow",
       "source": ""
     },
@@ -691,7 +691,7 @@
       "test": "test_R08_oversell_is_rejected_by_quantity_not_just_market_value",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.020",
+      "seconds": "0.018",
       "independent_oracle": "oversell rejected by quantity",
       "source": ""
     },
@@ -701,7 +701,7 @@
       "test": "test_R09_quantity_amount_without_price_is_not_executable_trade",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.022",
+      "seconds": "0.019",
       "independent_oracle": "qty without price not executable",
       "source": ""
     },
@@ -711,7 +711,7 @@
       "test": "test_R10_same_symbol_different_contract_without_conid_must_not_guess",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.023",
+      "seconds": "0.018",
       "independent_oracle": "same symbol two conids without conid => ambiguous",
       "source": ""
     },
@@ -721,7 +721,7 @@
       "test": "test_R11_value_with_zero_quantity_is_not_a_valid_new_stock_position",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.023",
+      "seconds": "0.015",
       "independent_oracle": "amount-only new STK position rejected",
       "source": ""
     },
@@ -731,7 +731,7 @@
       "test": "test_R12_fx_and_contract_multiplier_are_applied_to_actual_trade",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.022",
+      "seconds": "0.019",
       "independent_oracle": "FX*qty*price applied to CAD cash",
       "source": ""
     },
@@ -741,7 +741,7 @@
       "test": "test_R13_snapshot_id_changes_when_risk_relevant_lot_metadata_changes",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.022",
+      "seconds": "0.017",
       "independent_oracle": "snapshot_id changes with cost_basis/underlying_conid",
       "source": ""
     },
@@ -751,7 +751,7 @@
       "test": "test_R14_option_delta_exposure_matches_signed_notional_oracle",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.023",
+      "seconds": "0.020",
       "independent_oracle": "option delta weight = qty*delta*mult*spot*fx/nav = 0.7",
       "source": ""
     },
@@ -761,7 +761,7 @@
       "test": "test_R15_partial_or_replay_capture_cannot_enrich_investment_state",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.075",
+      "seconds": "0.066",
       "independent_oracle": "partial/replay cannot enrich",
       "source": ""
     },
@@ -771,7 +771,7 @@
       "test": "test_R16_stale_live_broker_snapshot_must_not_enrich",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.056",
+      "seconds": "0.049",
       "independent_oracle": "2h-old live capture cannot enrich under 300s max age",
       "source": ""
     },
@@ -781,7 +781,7 @@
       "test": "test_R17_broker_buying_power_usd_must_be_converted_or_marked_unavailable",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.059",
+      "seconds": "0.048",
       "independent_oracle": "USD BuyingPower converted via fx_rate_to_base or left unavailable",
       "source": ""
     },
@@ -791,7 +791,7 @@
       "test": "test_R18_old_live_capture_must_not_reconcile_as_current_state",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.096",
+      "seconds": "0.087",
       "independent_oracle": "ancient broker capture cannot reconcile as current",
       "source": ""
     },
@@ -801,7 +801,7 @@
       "test": "test_R19_as_of_restatement_never_uses_future_publication",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.103",
+      "seconds": "0.100",
       "independent_oracle": "PIT as-of excludes future publication",
       "source": ""
     },
@@ -811,7 +811,7 @@
       "test": "test_R20_incomplete_quarters_cannot_be_called_ttm",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.122",
+      "seconds": "0.112",
       "independent_oracle": "non-contiguous quarters cannot be TTM",
       "source": ""
     },
@@ -821,7 +821,7 @@
       "test": "test_R21_missing_fcf_growth_and_dilution_are_not_zero_return_forecasts",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.208",
+      "seconds": "0.332",
       "independent_oracle": "missing fcf_growth/dilution excluded, not zeroed",
       "source": ""
     },
@@ -831,7 +831,7 @@
       "test": "test_R22_earnings_actuals_must_not_be_backdated_as_pre_earnings_forecast",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.052",
+      "seconds": "0.043",
       "independent_oracle": "actuals cannot backdate pre-earnings forecast",
       "source": ""
     },
@@ -841,7 +841,7 @@
       "test": "test_R23_beat_without_guidance_raise_must_not_claim_beat_and_raise",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.072",
+      "seconds": "0.066",
       "independent_oracle": "beat without guidance raise != beat_and_raise",
       "source": ""
     },
@@ -851,7 +851,7 @@
       "test": "test_R24_unprofitable_bear_case_must_not_be_forced_positive_margin",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.019",
+      "seconds": "0.021",
       "independent_oracle": "bear op margin can be negative",
       "source": ""
     },
@@ -861,7 +861,7 @@
       "test": "test_R25_dcf_oracle_perpetuity_100_fcf_10pct_wacc_2pct_g",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.019",
+      "seconds": "0.021",
       "independent_oracle": "Gordon: 100/(0.10-0.02)=1250",
       "source": ""
     },
@@ -871,7 +871,7 @@
       "test": "test_R26_bsm_closed_form_atm_one_year_european_call",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.020",
+      "seconds": "0.018",
       "independent_oracle": "BSM ATM 1y closed form",
       "source": ""
     },
@@ -881,7 +881,7 @@
       "test": "test_R27_missing_open_price_remains_missing_to_backtester",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.085",
+      "seconds": "0.081",
       "independent_oracle": "missing open stays missing for backtester",
       "source": ""
     },
@@ -891,7 +891,7 @@
       "test": "test_R28_prediction_brier_is_computed_from_actual_outcomes",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.091",
+      "seconds": "0.090",
       "independent_oracle": "Brier from actual outcomes",
       "source": ""
     },
@@ -911,7 +911,7 @@
       "test": "test_R30_real_sqlite_backup_restore_preserves_rows",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.215",
+      "seconds": "0.199",
       "independent_oracle": "backup/restore preserves rows",
       "source": ""
     },
@@ -921,7 +921,7 @@
       "test": "test_R31_real_approval_journal_has_exactly_one_human_commit",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.418",
+      "seconds": "0.370",
       "independent_oracle": "exactly one human approval journal",
       "source": ""
     },
@@ -931,7 +931,7 @@
       "test": "test_R32_offline_replay_cannot_certify_live_shadow_mode",
       "classname": "tests.independent.test_real_scenarios",
       "status": "PASS",
-      "seconds": "0.196",
+      "seconds": "0.167",
       "independent_oracle": "offline replay never live_verified / production_accepted",
       "source": ""
     }
