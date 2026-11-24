@@ -23,7 +23,7 @@ dependencies = [
   "pypdf>=5,<7",
   "openpyxl>=3.1,<4",
   "websockets>=13",
-  "yfinance>=0.2.50,<1",
+  "yfinance>=0.2.50,<2",
 ]
 
 [project.optional-dependencies]
