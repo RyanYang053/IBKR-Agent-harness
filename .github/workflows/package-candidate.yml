@@ -1,0 +1,44 @@
+name: Python package candidate
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'personal_agent/**'
+      - 'pyproject.toml'
+      - '.github/workflows/package-candidate.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'personal_agent/**'
+      - 'pyproject.toml'
+      - '.github/workflows/package-candidate.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install build twine
+      - run: python -m build
+      - run: python -m twine check dist/*
+      - name: Test installed wheel outside the checkout
+        run: |
+          python -m venv "$RUNNER_TEMP/package-check"
+          "$RUNNER_TEMP/package-check/bin/python" -m pip install dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/package-check/bin/python" -m pip check
+          "$RUNNER_TEMP/package-check/bin/ibkr-agent" --help
+          "$RUNNER_TEMP/package-check/bin/python" -c "from personal_agent.server import make_server; assert make_server('investment', True)"
+      - name: Record checksums
+        run: sha256sum dist/* > dist/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-package-candidate
+          path: dist/
+          if-no-files-found: error
