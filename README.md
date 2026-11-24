@@ -24,7 +24,7 @@ python -m pip install -e '.[dev]'
 python scripts/demo.py --output harness-demo.html
 ```
 
-Open the generated HTML file locally. The report runs the existing synthetic verification script and captures actual results and exit status. It is not an authenticated broker session.
+Open the generated HTML file locally. The report runs six deterministic checks against the repository's synthetic Flex fixture and illustrative DCF inputs in temporary local state. No live brokerage, model or market-data session is needed.
 
 ## Why use it?
 
