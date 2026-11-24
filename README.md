@@ -20,7 +20,7 @@ Local-first Python and MCP toolkit for Interactive Brokers portfolio research, c
 
 ## Try the demo
 
-No personal portfolio, API key or live brokerage session is needed. [Open the public demo workflow](https://github.com/RyanYang053/IBKR-Agent-harness/actions/workflows/public-demo.yml), select a successful run from the branch you want to inspect, download its HTML preview artifact, unzip it and open `harness-demo.html`. GitHub may require sign-in to download an artifact; artifacts expire. The source-checkout commands below work independently of GitHub artifact availability.
+No personal portfolio, API key or live brokerage session is needed. [Open the public demo workflow](https://github.com/RyanYang053/IBKR-Agent-harness/actions/workflows/public-demo.yml), select a successful run from the branch you want to inspect, download its preview artifact (HTML and PNGs), unzip it and open `harness-demo.html`. GitHub may require sign-in to download an artifact; artifacts expire. The source-checkout commands below work independently of GitHub artifact availability.
 
 The demo is generated from fixture data, not a marketing mock-up, live market quote or financial performance claim.
 
