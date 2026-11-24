@@ -1,13 +1,26 @@
+<p align="center">
+  <img src="docs/assets/banner.svg" alt="IBKR Agent Harness — Deterministic finance • Scoped MCP tools • Human approval" width="100%">
+</p>
+
 # IBKR Agent Harness
 
 **Give your AI agent financial tools, not your brokerage login.**
 
 Local-first Python and MCP toolkit for Interactive Brokers portfolio research, combining deterministic calculations, investment policy checks, valuation and persistent workflows with human approval.
 
-[Quick start](#quick-start) · [Capabilities](#why-use-it) · [Engineering reference](ENGINEERING.md) · [Contribute](CONTRIBUTING.md)
+[Try the demo](#try-the-demo) · [Quick start](#quick-start) · [Documentation](#documentation) · [Roadmap](ROADMAP.md) · [FAQ](FAQ.md) · [Contribute](CONTRIBUTING.md)
 
 [![CI](https://github.com/RyanYang053/IBKR-Agent-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/RyanYang053/IBKR-Agent-harness/actions/workflows/ci.yml)
 [![MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
+[![Stars](https://img.shields.io/github/stars/RyanYang053/IBKR-Agent-harness?style=flat)](https://github.com/RyanYang053/IBKR-Agent-harness/stargazers) [![Forks](https://img.shields.io/github/forks/RyanYang053/IBKR-Agent-harness?style=flat)](https://github.com/RyanYang053/IBKR-Agent-harness/forks)
+[![Demo build](https://github.com/RyanYang053/IBKR-Agent-harness/actions/workflows/public-demo.yml/badge.svg)](https://github.com/RyanYang053/IBKR-Agent-harness/actions/workflows/public-demo.yml) [![Issues](https://img.shields.io/github/issues/RyanYang053/IBKR-Agent-harness)](https://github.com/RyanYang053/IBKR-Agent-harness/issues) [![Contributions](https://img.shields.io/badge/contributions-welcome-27845d)](CONTRIBUTING.md)
+
+## Try the demo
+
+No personal portfolio, API key or live brokerage session is needed. [Open the public demo workflow](https://github.com/RyanYang053/IBKR-Agent-harness/actions/workflows/public-demo.yml), select a successful run from the branch you want to inspect, download its HTML preview artifact, unzip it and open `harness-demo.html`. GitHub may require sign-in to download an artifact; artifacts expire. The source-checkout commands below work independently of GitHub artifact availability.
+
+The demo is generated from fixture data, not a marketing mock-up, live market quote or financial performance claim.
 
 ## Quick start
 
@@ -81,6 +94,21 @@ python scripts/verify.py
 ```
 
 See [engineering reference](ENGINEERING.md) for the preserved previous technical documentation, [launch gates](docs/LAUNCH.md) and [MIT license](LICENSE).
+
+## Documentation
+
+| Resource | Start here |
+| --- | --- |
+| First use | [Quick start](#quick-start) |
+| Technical detail | [Engineering reference](ENGINEERING.md) |
+| Frequently asked questions | [FAQ](FAQ.md) |
+| Current plans and gaps | [Roadmap](ROADMAP.md) |
+| Changes | [Changelog](CHANGELOG.md) |
+| Security and privacy | [Security policy](SECURITY.md) |
+| Licensing | [MIT license](LICENSE) |
+| Contribution process | [Contributing](CONTRIBUTING.md) · [Code of conduct](CODE_OF_CONDUCT.md) |
+| Releases | [GitHub Releases](https://github.com/RyanYang053/IBKR-Agent-harness/releases) (check current availability) |
+| Research reference | [Citation metadata](CITATION.cff) |
 
 ## Related projects
 
