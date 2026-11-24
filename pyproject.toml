@@ -17,7 +17,7 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-  "mcp>=1.12,<2",
+  "mcp>=1.12,<3",
   "streamlit>=1.40,<2",
   "defusedxml>=0.7,<1",
   "pypdf>=5,<7",
