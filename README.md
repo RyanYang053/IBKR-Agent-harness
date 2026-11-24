@@ -4,6 +4,8 @@
 
 # IBKR Agent Harness
 
+[English](README.md) · [简体中文](README.zh-CN.md)
+
 **Give your AI agent financial tools, not your brokerage login.**
 
 Local-first Python and MCP toolkit for Interactive Brokers portfolio research, combining deterministic calculations, investment policy checks, valuation and persistent workflows with human approval.
@@ -61,6 +63,8 @@ flowchart LR
 
 ## Connect an MCP client
 
+Browse the [MCP tool catalog](docs/MCP_TOOLS.md) for registered operations, visibility and descriptions. The catalog is based on source registrations; verify the actual runtime tool list before connecting a cloud client.
+
 For cloud-backed clients, use the public-only server and verify your client configuration. Replace the executable path with your environment's Python interpreter.
 
 ```json
@@ -100,13 +104,13 @@ See [engineering reference](ENGINEERING.md) for the preserved previous technical
 | Resource | Start here |
 | --- | --- |
 | First use | [Quick start](#quick-start) |
-| Technical detail | [Engineering reference](ENGINEERING.md) |
+| Technical detail | [Engineering reference](ENGINEERING.md) · [MCP tool catalog](docs/MCP_TOOLS.md) |
 | Frequently asked questions | [FAQ](FAQ.md) |
-| Current plans and gaps | [Roadmap](ROADMAP.md) |
+| Current plans and gaps | [Roadmap](ROADMAP.md) · [Vision](VISION.md) |
 | Changes | [Changelog](CHANGELOG.md) |
 | Security and privacy | [Security policy](SECURITY.md) |
 | Licensing | [MIT license](LICENSE) |
-| Contribution process | [Contributing](CONTRIBUTING.md) · [Code of conduct](CODE_OF_CONDUCT.md) |
+| Contribution process | [Contributing](CONTRIBUTING.md) · [Code of conduct](CODE_OF_CONDUCT.md) · [Support](SUPPORT.md) |
 | Releases | [GitHub Releases](https://github.com/RyanYang053/IBKR-Agent-harness/releases) (check current availability) |
 | Research reference | [Citation metadata](CITATION.cff) |
 
